@@ -3,6 +3,7 @@
 use std::rc::Rc;
 
 use num_bigint::BigInt;
+use std::fmt;
 use thiserror::Error;
 
 use super::{
@@ -20,20 +21,27 @@ pub enum LexerError {
     EndOfFile,
 }
 
-#[derive(Debug, Clone, Copy, strum::Display, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LexerErrorContext {
-    #[strum(to_string = "closing quote of char/string literal")]
     ClosingQuote,
-    #[strum(to_string = "char/string literal")]
     CharStringLiteral,
-    #[strum(to_string = "escape sequence")]
     EscapeSequence,
-    #[strum(to_string = "new token")]
     Token,
-    #[strum(to_string = "single character token")]
     SingleCharToken,
-    #[strum(to_string = "closing */ of block comment")]
     ClosingBlockComment,
+}
+
+impl fmt::Display for LexerErrorContext {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            LexerErrorContext::ClosingQuote => write!(f, "closing quote of char/string literal"),
+            LexerErrorContext::CharStringLiteral => write!(f, "char/string literal"),
+            LexerErrorContext::EscapeSequence => write!(f, "escape sequence"),
+            LexerErrorContext::Token => write!(f, "new token"),
+            LexerErrorContext::SingleCharToken => write!(f, "single character token"),
+            LexerErrorContext::ClosingBlockComment => write!(f, "closing */ of block comment"),
+        }
+    }
 }
 
 pub struct Lexer {
