@@ -54,6 +54,7 @@ fn scan(args: utils::cli::Args, mut writer: Box<dyn std::io::Write>) {
         content,
     });
     let mut lexer = Lexer::new(source);
+    let mut has_error = false;
     loop {
         match lexer.next() {
             Ok(tok) => {
@@ -72,8 +73,12 @@ fn scan(args: utils::cli::Args, mut writer: Box<dyn std::io::Write>) {
             }
             Err(LexerError::EndOfFile) => break,
             Err(e) => {
-                writeln!(writer, "{}", e).unwrap();
+                has_error = true;
+                eprintln!("{}", e);
             }
         }
+    }
+    if has_error {
+        std::process::exit(1);
     }
 }

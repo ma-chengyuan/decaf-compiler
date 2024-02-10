@@ -40,7 +40,7 @@ def main():
         output = stdout.decode("utf-8")
         with open(output_file, "r") as f:
             ref_output = f.read()
-        output_valid = is_valid(output)
+        output_valid = proc.returncode == 0
         ref_output_valid = is_valid(ref_output)
         if output_valid != ref_output_valid:
             print(f"Test {input_file} failed: output is not valid")
