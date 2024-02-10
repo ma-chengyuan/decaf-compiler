@@ -30,7 +30,7 @@ def main():
         total_cases += 1
         base, _ = os.path.splitext(input_file)
         output_file = output_file_dir / (base + ".out")
-        print(str(input_file_dir / input_file))
+        print(str(input_file_dir / input_file), end=": ")
         proc = subprocess.Popen(
             [str(exec_name), "-t", "scan", str(input_file_dir / input_file)],
             stdout=subprocess.PIPE,
@@ -58,6 +58,15 @@ def main():
                 print(f"Test {input_file} failed: output is not correct")
                 print(result)
                 continue
+            print("EXPECTED PASS")
+        else:
+            print("EXPECTED ERROR")
+            print(
+                "\n".join(
+                    "    " + s for s in stderr.decode("utf-8").strip().splitlines()
+                )
+            )
+            print("=" * 100)
         passed_cases += 1
     print(f"Passed {passed_cases}/{total_cases} tests")
 

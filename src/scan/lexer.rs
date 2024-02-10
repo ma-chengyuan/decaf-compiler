@@ -13,9 +13,9 @@ use super::{
 
 #[derive(Debug, Clone, Error)]
 pub enum LexerError {
-    #[error("unexpected character '{0}' at {1} (in {2})")]
+    #[error("{1}: unexpected character {0:?} ({2})")]
     UnexpectedChar(char, Location, LexerErrorContext),
-    #[error("unexpected end of file in {0} while (in {1})")]
+    #[error("{0}: unexpected end of file ({1})")]
     UnexpectedEndOfFile(Rc<Source>, LexerErrorContext),
     #[error("end of file")]
     EndOfFile,
@@ -23,10 +23,12 @@ pub enum LexerError {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LexerErrorContext {
-    ClosingQuote,
-    CharStringLiteral,
+    CharLiteral,
+    StringLiteral,
+    CharClosingQuote,
+    StringClosingQuote,
     EscapeSequence,
-    Token,
+    OperatorToken,
     SingleCharToken,
     ClosingBlockComment,
 }
@@ -34,12 +36,20 @@ pub enum LexerErrorContext {
 impl fmt::Display for LexerErrorContext {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            LexerErrorContext::ClosingQuote => write!(f, "closing quote of char/string literal"),
-            LexerErrorContext::CharStringLiteral => write!(f, "char/string literal"),
-            LexerErrorContext::EscapeSequence => write!(f, "escape sequence"),
-            LexerErrorContext::Token => write!(f, "new token"),
-            LexerErrorContext::SingleCharToken => write!(f, "single character token"),
-            LexerErrorContext::ClosingBlockComment => write!(f, "closing */ of block comment"),
+            LexerErrorContext::CharLiteral => write!(f, "invalid character in char literal"),
+            LexerErrorContext::StringLiteral => write!(f, "invalid charcter in string literal"),
+            LexerErrorContext::CharClosingQuote => {
+                write!(f, "expecting closing quote of char literal")
+            }
+            LexerErrorContext::StringClosingQuote => {
+                write!(f, "expecting closing quote of string literal")
+            }
+            LexerErrorContext::EscapeSequence => write!(f, "malformed escape sequence"),
+            LexerErrorContext::OperatorToken => write!(f, "invalid start of operator token"),
+            LexerErrorContext::SingleCharToken => write!(f, "invalid single character token"),
+            LexerErrorContext::ClosingBlockComment => {
+                write!(f, "expecting closing */ of block comment")
+            }
         }
     }
 }
@@ -150,11 +160,11 @@ impl Lexer {
         })
     }
 
-    fn next_char_internal(&mut self) -> Result<char, LexerError> {
+    fn next_char_internal(&mut self, context: LexerErrorContext) -> Result<char, LexerError> {
         match self.cur_char {
             None => Err(LexerError::UnexpectedEndOfFile(
                 self.source.clone(),
-                LexerErrorContext::CharStringLiteral,
+                context,
             )),
             Some('\\') => {
                 self.advance();
@@ -187,7 +197,7 @@ impl Lexer {
             _ => Err(LexerError::UnexpectedChar(
                 self.cur_char.unwrap(),
                 self.cur_loc.clone(),
-                LexerErrorContext::CharStringLiteral,
+                context,
             )),
         }
     }
@@ -195,7 +205,7 @@ impl Lexer {
     fn next_char(&mut self) -> Result<TokenWithSpan, LexerError> {
         let start = self.cur_loc.clone();
         self.advance(); // Skip opening quote
-        let c = self.next_char_internal()?;
+        let c = self.next_char_internal(LexerErrorContext::CharLiteral)?;
         match self.cur_char {
             Some('\'') => {
                 self.advance();
@@ -210,7 +220,7 @@ impl Lexer {
             _ => Err(LexerError::UnexpectedChar(
                 self.cur_char.unwrap(),
                 self.cur_loc.clone(),
-                LexerErrorContext::ClosingQuote,
+                LexerErrorContext::CharClosingQuote,
             )),
         }
     }
@@ -224,14 +234,14 @@ impl Lexer {
                 None => {
                     return Err(LexerError::UnexpectedEndOfFile(
                         self.source.clone(),
-                        LexerErrorContext::ClosingQuote,
+                        LexerErrorContext::StringClosingQuote,
                     ))
                 }
                 Some('\"') => {
                     self.advance();
                     break;
                 }
-                Some(_) => value.push(self.next_char_internal()?),
+                Some(_) => value.push(self.next_char_internal(LexerErrorContext::StringLiteral)?),
             }
         }
         Ok(TokenWithSpan {
@@ -393,7 +403,7 @@ impl Lexer {
                 return Err(LexerError::UnexpectedChar(
                     c,
                     start.clone(),
-                    LexerErrorContext::Token,
+                    LexerErrorContext::OperatorToken,
                 ))
             }
         };
