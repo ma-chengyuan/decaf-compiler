@@ -1,10 +1,18 @@
+use std::rc::Rc;
+
 mod add;
 mod utils;
+
+mod scan;
+
+use scan::lexer::{Lexer, LexerError};
+
+use crate::scan::location::Source;
 
 fn get_writer(output: &Option<std::path::PathBuf>) -> Box<dyn std::io::Write> {
     match output {
         Some(path) => Box::new(std::fs::File::create(path.as_path()).unwrap()),
-        None => Box::new(std::io::stdout())
+        None => Box::new(std::io::stdout()),
     }
 }
 
@@ -25,9 +33,7 @@ fn main() {
         utils::cli::CompilerAction::Default => {
             panic!("Invalid target");
         }
-        utils::cli::CompilerAction::Scan => {
-            todo!("scan");
-        }
+        utils::cli::CompilerAction::Scan => scan(args, _writer),
         utils::cli::CompilerAction::Parse => {
             todo!("parse");
         }
@@ -36,6 +42,38 @@ fn main() {
         }
         utils::cli::CompilerAction::Assembly => {
             todo!("assembly");
+        }
+    }
+}
+
+fn scan(args: utils::cli::Args, mut writer: Box<dyn std::io::Write>) {
+    let content = std::fs::read_to_string(&args.input).expect("error reading file");
+    let chars = content.chars().collect::<Vec<_>>();
+    let source = Rc::new(Source {
+        filename: args.input.to_string_lossy().to_string(),
+        content,
+    });
+    let mut lexer = Lexer::new(source);
+    loop {
+        match lexer.next() {
+            Ok(tok) => {
+                let prefix = match &tok.token {
+                    scan::token::Token::Identifier(_) => "IDENTIFIER ",
+                    scan::token::Token::IntLiteral(_) => "INTLITERAL ",
+                    scan::token::Token::CharLiteral(_) => "CHARLITERAL ",
+                    scan::token::Token::StringLiteral(_) => "STRINGLITERAL ",
+                    scan::token::Token::BoolLiteral(_) => "BOOLEANLITERAL ",
+                    _ => "",
+                };
+                let content = chars[tok.span.start.offset..tok.span.end.offset]
+                    .iter()
+                    .collect::<String>();
+                writeln!(writer, "{} {}{}", tok.span.start.line, prefix, content).unwrap();
+            }
+            Err(LexerError::EndOfFile) => break,
+            Err(e) => {
+                writeln!(writer, "{}", e).unwrap();
+            }
         }
     }
 }
