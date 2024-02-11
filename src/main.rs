@@ -1,11 +1,16 @@
-use std::rc::Rc;
+use std::{path::Path, rc::Rc};
 
 mod add;
 mod utils;
 
+mod parse;
 mod scan;
 
-use scan::scanner::{Lexer, ScannerError};
+use parse::parser::Parser;
+use scan::{
+    scanner::{Lexer, ScannerError},
+    token::{Token, TokenWithSpan},
+};
 
 use crate::scan::location::Source;
 
@@ -33,10 +38,8 @@ fn main() {
         utils::cli::CompilerAction::Default => {
             panic!("Invalid target");
         }
-        utils::cli::CompilerAction::Scan => scan(args, _writer),
-        utils::cli::CompilerAction::Parse => {
-            todo!("parse");
-        }
+        utils::cli::CompilerAction::Scan => main_scan(args, _writer),
+        utils::cli::CompilerAction::Parse => main_parse(args, _writer),
         utils::cli::CompilerAction::Inter => {
             todo!("inter");
         }
@@ -46,7 +49,7 @@ fn main() {
     }
 }
 
-fn scan(args: utils::cli::Args, mut writer: Box<dyn std::io::Write>) {
+fn main_scan(args: utils::cli::Args, mut writer: Box<dyn std::io::Write>) {
     let content = std::fs::read_to_string(&args.input).expect("error reading file");
     let chars = content.chars().collect::<Vec<_>>();
     let source = Rc::new(Source {
@@ -57,6 +60,10 @@ fn scan(args: utils::cli::Args, mut writer: Box<dyn std::io::Write>) {
     let mut has_error = false;
     loop {
         match lexer.next() {
+            Ok(TokenWithSpan {
+                token: Token::EndOfFile,
+                ..
+            }) => break,
             Ok(tok) => {
                 let prefix = match &tok.token {
                     scan::token::Token::Identifier(_) => "IDENTIFIER ",
@@ -71,7 +78,6 @@ fn scan(args: utils::cli::Args, mut writer: Box<dyn std::io::Write>) {
                     .collect::<String>();
                 writeln!(writer, "{} {}{}", tok.span.start.line, prefix, content).unwrap();
             }
-            Err(ScannerError::EndOfFile) => break,
             Err(e) => {
                 has_error = true;
                 eprintln!("{}", e);
@@ -81,4 +87,42 @@ fn scan(args: utils::cli::Args, mut writer: Box<dyn std::io::Write>) {
     if has_error {
         std::process::exit(1);
     }
+}
+
+fn main_parse(args: utils::cli::Args, mut writer: Box<dyn std::io::Write>) {
+    let (tokens, errors) = scan(&args.input);
+    if !errors.is_empty() {
+        for e in errors {
+            eprintln!("{}", e);
+        }
+        std::process::exit(1);
+    }
+    let mut parser = Parser::new(tokens);
+    match parser.parse_expr() {
+        Ok(expr) => writeln!(writer, "{:#?}", expr).unwrap(),
+        Err(e) => {
+            eprintln!("{}", e);
+            std::process::exit(1);
+        }
+    }
+}
+
+fn scan(path: impl AsRef<Path>) -> (Vec<TokenWithSpan>, Vec<ScannerError>) {
+    let filename = path.as_ref().to_string_lossy().to_string();
+    let content = std::fs::read_to_string(path).expect("error reading file");
+    let source = Rc::new(Source { filename, content });
+    let mut lexer = Lexer::new(source);
+    let mut tokens = vec![];
+    let mut errors = vec![];
+    let mut eof = false;
+    while !eof {
+        match lexer.next() {
+            Ok(tok) => {
+                eof |= matches!(tok.token, Token::EndOfFile);
+                tokens.push(tok);
+            }
+            Err(e) => errors.push(e),
+        }
+    }
+    (tokens, errors)
 }
