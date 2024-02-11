@@ -77,7 +77,7 @@ impl Lexer {
     }
 
     fn advance(&mut self) {
-        if let Some(_) = self.cur_char {
+        if self.cur_char.is_some() {
             self.cur_char = self.all_chars.get(self.cur_loc.offset + 1).cloned();
             self.cur_loc.offset += 1;
             if let Some('\n') = self.cur_char {

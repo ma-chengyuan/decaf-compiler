@@ -90,7 +90,7 @@ fn main_scan(args: utils::cli::Args, mut writer: Box<dyn std::io::Write>) {
 }
 
 fn main_parse(args: utils::cli::Args, mut writer: Box<dyn std::io::Write>) {
-    let (tokens, errors) = scan(&args.input);
+    let (tokens, errors) = scan(args.input);
     if !errors.is_empty() {
         for e in errors {
             eprintln!("{}", e);
