@@ -1,5 +1,4 @@
 #![allow(dead_code)]
-use std::fmt;
 
 use crate::{
     parse::ast::{BinOp, MethodCallArg},
@@ -9,39 +8,19 @@ use crate::{
     },
 };
 
-use super::ast::{
-    BoolLiteral, CharLiteral, Expr, Ident, IntLiteral, Location, MethodCall, RuntimeLiteral,
-    UnaryOp,
+use super::{
+    ast::{
+        BoolLiteral, CharLiteral, Expr, Ident, IntLiteral, Location, MethodCall, RuntimeLiteral,
+        UnaryOp,
+    },
+    error::{ParserError, ParserErrorKind},
 };
 
 #[derive(Debug, Clone)]
-pub enum ParserError {
-    UnexpectedToken {
-        expected: Vec<Token>,
-        found: Spanned<Token>,
-    },
-    IntegerOutOfRange(Spanned<Token>),
-}
-
-impl fmt::Display for ParserError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ParserError::UnexpectedToken { expected, found } => {
-                write!(
-                    f,
-                    "{:?}: unexpected token {:?}, expected one of {:?}",
-                    found.span.start, found.inner, expected
-                )
-            }
-            ParserError::IntegerOutOfRange(token) => {
-                write!(
-                    f,
-                    "{:?}: integer literal out of range: {:?}",
-                    token.span.start, token.inner
-                )
-            }
-        }
-    }
+pub enum ParserContext {
+    Function,
+    Statement,
+    Expr,
 }
 
 pub struct Parser {
@@ -55,10 +34,14 @@ pub struct Parser {
 
 macro_rules! unexpected {
     ($self:ident, $($p:expr),+) => {
-        return Err(ParserError::UnexpectedToken {
-            expected: vec![$($p),+],
-            found: $self.current().clone(),
-        })
+        return Err(ParserError {
+            kind: Box::new(ParserErrorKind::UnexpectedToken {
+                expected: vec![$($p),+],
+                found: $self.current().clone(),
+            }),
+            contexts: vec![]
+        }
+    )
     };
 }
 
@@ -178,9 +161,10 @@ impl Parser {
         match &self.current().inner {
             Token::IntLiteral(value) => {
                 let lit = IntLiteral {
-                    inner: value
-                        .try_into()
-                        .map_err(|_| ParserError::IntegerOutOfRange(self.current().clone()))?,
+                    inner: value.try_into().map_err(|_| ParserError {
+                        kind: Box::new(ParserErrorKind::IntegerOutOfRange(self.current().clone())),
+                        contexts: vec![],
+                    })?,
                     span: self.current().span.clone(),
                 };
                 self.advance();
@@ -291,20 +275,16 @@ impl Parser {
                 expect_advance!(self, Token::CloseParen);
                 Ok(expr)
             }
-            Token::Sub => {
+            Token::Sub | Token::Not => {
+                let op = match self.current().inner {
+                    Token::Sub => UnaryOp::Neg,
+                    Token::Not => UnaryOp::Not,
+                    _ => unreachable!(),
+                };
                 self.advance();
-                let expr = self.parse_expr_atom()?;
                 Ok(Expr::UnaryOp {
-                    op: UnaryOp::Neg,
-                    expr: Box::new(expr),
-                })
-            }
-            Token::Not => {
-                self.advance();
-                let expr = self.parse_expr_atom()?;
-                Ok(Expr::UnaryOp {
-                    op: UnaryOp::Not,
-                    expr: Box::new(expr),
+                    op,
+                    expr: Box::new(self.parse_expr_atom()?),
                 })
             }
             _ => todo!(),
