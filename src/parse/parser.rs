@@ -650,6 +650,12 @@ impl Parser {
                 });
             }
         }
+        if decls.is_empty() {
+            return Err(ParserError {
+                kind: Box::new(ParserErrorKind::EmptyFieldDecl(self.current().clone())),
+                contexts: vec![],
+            });
+        }
         Ok(FieldDecl {
             is_const,
             r#type,

@@ -38,6 +38,8 @@ pub enum ParserErrorKind {
     IntegerOutOfRange(Spanned<Token>),
     // Empty initializer in array declaration, token points to the opening brace
     EmptyInitializer(Spanned<Token>),
+    // Empty field declaration, token points to the semicolon
+    EmptyFieldDecl(Spanned<Token>),
 }
 
 impl fmt::Display for ParserErrorKind {
@@ -64,8 +66,8 @@ impl fmt::Display for ParserErrorKind {
                     token.span.start
                 )
             }
-            _ => {
-                write!(f, "unimplemented parser error kind")
+            ParserErrorKind::EmptyFieldDecl(token) => {
+                write!(f, "{}: empty field declaration", token.span.start)
             }
         }
     }
