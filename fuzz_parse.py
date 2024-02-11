@@ -8,15 +8,15 @@ suffix = ".exe" if os.name == "nt" else ""
 sys.setrecursionlimit(10**6)
 
 
-class GrammaticElement:
+class SyntacticElement:
     def generate(self) -> str:
         raise NotImplementedError
 
 
-CFG: dict[str, GrammaticElement]
+CFG: dict[str, SyntacticElement]
 
 
-class T(GrammaticElement):
+class T(SyntacticElement):
     def __init__(self, token: str):
         self.token = token
 
@@ -24,7 +24,7 @@ class T(GrammaticElement):
         return self.token
 
 
-class N(GrammaticElement):
+class N(SyntacticElement):
     def __init__(self, name: str):
         self.name = name
 
@@ -36,40 +36,41 @@ class N(GrammaticElement):
             raise
 
 
-class Seq(GrammaticElement):
-    def __init__(self, *elements: GrammaticElement):
+class Seq(SyntacticElement):
+    def __init__(self, *elements: SyntacticElement, sep=" "):
         self.elements = elements
+        self.sep = sep
 
     def generate(self) -> str:
-        return " ".join(e.generate() for e in self.elements).strip()
+        return self.sep.join(e.generate() for e in self.elements).strip()
 
 
-class Alt(GrammaticElement):
-    def __init__(self, *elements: GrammaticElement):
+class Alt(SyntacticElement):
+    def __init__(self, *elements: SyntacticElement):
         self.elements = elements
 
     def generate(self) -> str:
         return random.choice(self.elements).generate()
 
 
-class CommaSepOneOrMore(GrammaticElement):
-    def __init__(self, element: GrammaticElement):
+class CommaSepOneOrMore(SyntacticElement):
+    def __init__(self, element: SyntacticElement):
         self.element = element
 
     def generate(self) -> str:
         return ", ".join(self.element.generate() for _ in range(random.randint(1, 5)))
 
 
-class Opt(GrammaticElement):
-    def __init__(self, element: GrammaticElement):
+class Opt(SyntacticElement):
+    def __init__(self, element: SyntacticElement):
         self.element = element
 
     def generate(self) -> str:
         return self.element.generate() if random.choice([True, False]) else ""
 
 
-class ZeroOrMore(GrammaticElement):
-    def __init__(self, element: GrammaticElement, sep=" "):
+class ZeroOrMore(SyntacticElement):
+    def __init__(self, element: SyntacticElement, sep=" "):
         self.element = element
         self.sep = sep
 
@@ -79,16 +80,17 @@ class ZeroOrMore(GrammaticElement):
         ).strip()
 
 
-class ID(GrammaticElement):
+class ID(SyntacticElement):
     def generate(self) -> str:
         return random.choice(
             ["a", "b", "c", "d", "e", "f", "g", "foo", "bar", "baz", "main"]
         )
 
 
-class IntLiteral(GrammaticElement):
+class IntLiteral(SyntacticElement):
     def generate(self) -> str:
-        value = random.randint(0, 100000)
+        digits = random.randint(1, 20)
+        value = random.randint(0, 10**digits - 1)
         if random.random() < 0.5:
             return str(value)
         return f"0x{value:X}"
@@ -97,10 +99,9 @@ class IntLiteral(GrammaticElement):
 CFG = {
     "program": Seq(
         ZeroOrMore(N("import_decl"), sep="\n"),
-        T("\n"),
         ZeroOrMore(N("field_decl"), sep="\n"),
-        T("\n"),
         ZeroOrMore(N("method_decl"), sep="\n"),
+        sep="\n",
     ),
     "import_decl": Seq(T("import"), N("id"), T(";")),
     "field_decl": Seq(
