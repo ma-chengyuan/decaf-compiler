@@ -2,7 +2,7 @@ use std::fmt;
 
 use crate::scan::{location::Spanned, token::Token};
 
-use super::parser::ParserContext;
+use super::parser::{ParseScope, ParserContext};
 
 #[derive(Debug, Clone)]
 pub struct ParserError {
@@ -29,36 +29,54 @@ impl fmt::Display for ParserError {
 
 #[derive(Debug, Clone)]
 pub enum ParserErrorKind {
+    /// Unexpected token (general case, will be moved to a more specific error kind later)
     UnexpectedToken {
-        expected: Vec<Token>,
+        expecting: Vec<Token>,
         found: Spanned<Token>,
     },
+    // Integer literal out of range
     IntegerOutOfRange(Spanned<Token>),
+    // Empty initializer in array declaration, token points to the opening brace
+    EmptyInitializer(Spanned<Token>),
 }
 
 impl fmt::Display for ParserErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ParserErrorKind::UnexpectedToken { expected, found } => {
+            ParserErrorKind::UnexpectedToken { expecting, found } => {
                 write!(
                     f,
-                    "{:?}: unexpected token {:?}, expected one of {:?}",
-                    found.span.start, found.inner, expected
+                    "{}: unexpected token {:?}, expected one of {:?}",
+                    found.span.start, found.inner, expecting
                 )
             }
             ParserErrorKind::IntegerOutOfRange(token) => {
                 write!(
                     f,
-                    "{:?}: integer literal out of range: {:?}",
+                    "{}: integer literal out of range: {:?}",
                     token.span.start, token.inner
                 )
+            }
+            ParserErrorKind::EmptyInitializer(token) => {
+                write!(
+                    f,
+                    "{}: empty initializer in array declaration",
+                    token.span.start
+                )
+            }
+            _ => {
+                write!(f, "unimplemented parser error kind")
             }
         }
     }
 }
 
-pub trait ParseErrorExt {
+pub(super) trait ParseErrorExt: Sized {
     fn with_context(self, ctx: ParserContext) -> Self;
+
+    fn with_scope(self, scope: &ParseScope) -> Self {
+        self.with_context(scope.context.clone())
+    }
 }
 
 impl ParseErrorExt for ParserError {

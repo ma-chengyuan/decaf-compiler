@@ -1,7 +1,9 @@
 #![allow(dead_code)]
 
+use std::{cell::RefCell, rc::Rc};
+
 use crate::{
-    parse::ast::{BinOp, MethodCallArg},
+    parse::ast::{BinOp, MethodCallArg, MethodParam},
     scan::{
         location::{Span, Spanned},
         token::Token,
@@ -10,17 +12,17 @@ use crate::{
 
 use super::{
     ast::{
-        BoolLiteral, CharLiteral, Expr, Ident, IntLiteral, Location, MethodCall, RuntimeLiteral,
-        UnaryOp,
+        Block, BoolLiteral, CharLiteral, Expr, FieldDecl, FieldDeclaration, FieldDeclarator, Ident,
+        ImportDecl, Initializer, IntLiteral, Location, MethodCall, MethodDecl, Program,
+        RuntimeLiteral, Stmt, Type, UnaryOp, UpdateOp,
     },
-    error::{ParserError, ParserErrorKind},
+    error::{ParseErrorExt, ParserError, ParserErrorKind},
 };
 
 #[derive(Debug, Clone)]
 pub enum ParserContext {
-    Function,
-    Statement,
-    Expr,
+    MethodDecl(Ident),
+    FieldDecl(Ident)
 }
 
 pub struct Parser {
@@ -29,19 +31,27 @@ pub struct Parser {
     /// The current position in the token stream.
     pos: usize,
     /// A list of recovered errors.
-    errors: Vec<ParserError>,
+    errors: Rc<RefCell<Vec<ParserError>>>,
 }
 
 macro_rules! unexpected {
     ($self:ident, $($p:expr),+) => {
         return Err(ParserError {
             kind: Box::new(ParserErrorKind::UnexpectedToken {
-                expected: vec![$($p),+],
+                expecting: vec![$($p),+],
                 found: $self.current().clone(),
             }),
             contexts: vec![]
-        }
-    )
+        })
+    };
+    ($self:ident[$scope:ident], $($p:expr),+) => {
+        return Err(ParserError {
+            kind: Box::new(ParserErrorKind::UnexpectedToken {
+                expecting: vec![$($p),+],
+                found: $self.current().clone(),
+            }),
+            contexts: vec![$scope.context.clone()]
+        })
     };
 }
 
@@ -52,6 +62,14 @@ macro_rules! expect_advance {
                 $self.advance();
             }
             _ => unexpected!($self, $t),
+        }
+    };
+    ($self:ident[$scope:ident], $t:path) => {
+        match &$self.current().inner {
+            $t => {
+                $self.advance();
+            }
+            _ => unexpected!($self[$scope], $t),
         }
     };
 }
@@ -76,7 +94,7 @@ impl Parser {
         Self {
             tokens,
             pos: 0,
-            errors: Vec::new(),
+            errors: Default::default(),
         }
     }
 
@@ -183,6 +201,7 @@ impl Parser {
                     inner: *value,
                     span: self.current().span.clone(),
                 };
+                self.advance();
                 Ok(RuntimeLiteral::Char(lit))
             }
             _ => unexpected!(
@@ -287,7 +306,501 @@ impl Parser {
                     expr: Box::new(self.parse_expr_atom()?),
                 })
             }
-            _ => todo!(),
+            _ => unexpected!(
+                self,
+                Token::Identifier(Default::default()),
+                Token::IntLiteral(Default::default()),
+                Token::BoolLiteral(Default::default()),
+                Token::CharLiteral(Default::default()),
+                Token::Len,
+                Token::OpenParen,
+                Token::Sub,
+                Token::Not
+            ),
         }
+    }
+
+    pub fn parse_update_stmt(&mut self) -> Result<Stmt, ParserError> {
+        let location = self.parse_location()?;
+        match self.current().inner {
+            Token::Increment | Token::Decrement => {
+                let op = match self.current().inner {
+                    Token::Increment => UpdateOp::Increment,
+                    Token::Decrement => UpdateOp::Decrement,
+                    _ => unreachable!(),
+                };
+                self.advance();
+                Ok(Stmt::Update { location, op })
+            }
+            Token::Assign
+            | Token::AddAssign
+            | Token::SubAssign
+            | Token::MulAssign
+            | Token::DivAssign
+            | Token::ModAssign => {
+                let token = self.current().inner.clone();
+                self.advance();
+                let rhs = self.parse_expr()?;
+                let op = match token {
+                    Token::Assign => UpdateOp::Assign(rhs),
+                    Token::AddAssign => UpdateOp::AddAssign(rhs),
+                    Token::SubAssign => UpdateOp::SubAssign(rhs),
+                    Token::MulAssign => UpdateOp::MulAssign(rhs),
+                    Token::DivAssign => UpdateOp::DivAssign(rhs),
+                    Token::ModAssign => UpdateOp::ModAssign(rhs),
+                    _ => unreachable!(),
+                };
+                Ok(Stmt::Update { location, op })
+            }
+            _ => unexpected!(
+                self,
+                Token::Increment,
+                Token::Decrement,
+                Token::Assign,
+                Token::AddAssign,
+                Token::SubAssign,
+                Token::MulAssign,
+                Token::DivAssign,
+                Token::ModAssign
+            ),
+        }
+    }
+
+    // Parsing statements
+
+    pub fn parse_stmt(&mut self) -> Result<Stmt, ParserError> {
+        match &self.current().inner {
+            Token::Identifier(_) => {
+                let ret = self.parse_for_update()?;
+                expect_advance!(self, Token::Semicolon);
+                Ok(ret)
+            }
+            Token::If => self.parse_if_stmt(),
+            Token::While => self.parse_while_stmt(),
+            Token::Return => self.parse_return_stmt(),
+            Token::For => self.parse_for_stmt(),
+            Token::Break => {
+                self.advance();
+                expect_advance!(self, Token::Semicolon);
+                Ok(Stmt::Break)
+            }
+            Token::Continue => {
+                self.advance();
+                expect_advance!(self, Token::Semicolon);
+                Ok(Stmt::Continue)
+            }
+            _ => unexpected!(
+                self,
+                Token::Identifier(Default::default()),
+                Token::If,
+                Token::While,
+                Token::Return,
+                Token::For,
+                Token::Break,
+                Token::Continue
+            ),
+        }
+    }
+
+    pub fn parse_for_update(&mut self) -> Result<Stmt, ParserError> {
+        if self.lookahead(1).inner == Token::OpenParen {
+            Ok(Stmt::Call(self.parse_call()?))
+        } else {
+            self.parse_update_stmt()
+        }
+    }
+
+    pub fn parse_if_stmt(&mut self) -> Result<Stmt, ParserError> {
+        expect_advance!(self, Token::If);
+        expect_advance!(self, Token::OpenParen);
+        let condition = self.parse_expr()?;
+        expect_advance!(self, Token::CloseParen);
+        let then_block = self.parse_block()?;
+        let else_block = match &self.current().inner {
+            Token::Else => {
+                self.advance();
+                Some(self.parse_block()?)
+            }
+            _ => None,
+        };
+        Ok(Stmt::If {
+            condition,
+            then_block,
+            else_block,
+        })
+    }
+
+    pub fn parse_while_stmt(&mut self) -> Result<Stmt, ParserError> {
+        expect_advance!(self, Token::While);
+        expect_advance!(self, Token::OpenParen);
+        let condition = self.parse_expr()?;
+        expect_advance!(self, Token::CloseParen);
+        let block = self.parse_block()?;
+        Ok(Stmt::While { condition, block })
+    }
+
+    pub fn parse_for_stmt(&mut self) -> Result<Stmt, ParserError> {
+        expect_advance!(self, Token::For);
+        expect_advance!(self, Token::OpenParen);
+        let loop_var_name = self.parse_ident()?;
+        expect_advance!(self, Token::Assign);
+        let init = self.parse_expr()?;
+        expect_advance!(self, Token::Semicolon);
+        let cond = self.parse_expr()?;
+        expect_advance!(self, Token::Semicolon);
+        let update = self.parse_for_update()?;
+        expect_advance!(self, Token::CloseParen);
+        let block = self.parse_block()?;
+        Ok(Stmt::For {
+            loop_var_name,
+            init,
+            cond,
+            update: Box::new(update),
+            block,
+        })
+    }
+
+    pub fn parse_return_stmt(&mut self) -> Result<Stmt, ParserError> {
+        expect_advance!(self, Token::Return);
+        let expr = match &self.current().inner {
+            Token::Semicolon => None,
+            _ => Some(self.parse_expr()?),
+        };
+        expect_advance!(self, Token::Semicolon);
+        Ok(Stmt::Return(expr))
+    }
+
+    pub fn parse_block(&mut self) -> Result<Block, ParserError> {
+        expect_advance!(self, Token::OpenBrace);
+        let mut field_decls = Vec::new();
+        let mut stmts = Vec::new();
+
+        loop {
+            match &self.current().inner {
+                Token::CloseBrace => {
+                    self.advance();
+                    break;
+                }
+                Token::Int | Token::Bool | Token::Const if stmts.is_empty() => {
+                    match self.parse_field_decl() {
+                        Ok(decl) => field_decls.push(decl),
+                        Err(e) => self.panic_recovery(e),
+                    }
+                }
+                Token::EndOfFile => unexpected!(self, Token::CloseBrace),
+                _ => match self.parse_stmt() {
+                    Ok(stmt) => stmts.push(stmt),
+                    Err(e) => self.panic_recovery(e),
+                },
+            }
+        }
+        Ok(Block { field_decls, stmts })
+    }
+
+    // Parsing field and method declaration
+
+    pub fn parse_type(&mut self) -> Result<Type, ParserError> {
+        match &self.current().inner {
+            Token::Int => {
+                self.advance();
+                Ok(Type::Int)
+            }
+            Token::Bool => {
+                self.advance();
+                Ok(Type::Bool)
+            }
+            _ => unexpected!(self, Token::Int, Token::Bool),
+        }
+    }
+
+    pub fn parse_field_declarator(&mut self) -> Result<FieldDeclarator, ParserError> {
+        let declarator = FieldDeclarator::Ident(self.parse_ident()?);
+        match self.current().inner {
+            Token::OpenBracket => {
+                self.advance();
+                let scope = ParseScope::new(self, ParserContext::FieldDecl(declarator.ident().clone()));
+                let size = match &self.current().inner {
+                    Token::IntLiteral(value) => {
+                        let spanned = Spanned {
+                            inner: value.try_into().map_err(|_| ParserError {
+                                kind: Box::new(ParserErrorKind::IntegerOutOfRange(
+                                    self.current().clone(),
+                                )),
+                                contexts: vec![],
+                            }).with_scope(&scope)?,
+                            span: self.current().span.clone(),
+                        };
+
+                        self.advance();
+                        Some(spanned)
+                    }
+                    Token::CloseBracket => None,
+                    _ => unexpected!(
+                        self[scope],
+                        Token::IntLiteral(Default::default()),
+                        Token::CloseBracket
+                    ),
+                };
+                expect_advance!(self[scope], Token::CloseBracket);
+                Ok(FieldDeclarator::Array {
+                    base: Box::new(declarator),
+                    size,
+                })
+            }
+            _ => Ok(declarator),
+        }
+    }
+
+    pub fn parse_initializer(&mut self) -> Result<Initializer, ParserError> {
+        match &self.current().inner {
+            Token::OpenBrace => {
+                let token = self.current().clone();
+                self.advance();
+                let mut initializers = Vec::new();
+                loop {
+                    match &self.current().inner {
+                        Token::CloseBrace => {
+                            self.advance();
+                            break;
+                        }
+                        _ => {
+                            initializers.push(self.parse_initializer()?);
+                            match self.current().inner {
+                                Token::Comma => self.advance(),
+                                Token::CloseBrace => continue,
+                                _ => unexpected!(self, Token::Comma, Token::CloseBrace),
+                            }
+                        }
+                    }
+                }
+                if initializers.is_empty() {
+                    return Err(ParserError {
+                        kind: Box::new(ParserErrorKind::EmptyInitializer(token)),
+                        contexts: vec![],
+                    });
+                }
+                Ok(Initializer::Array(initializers))
+            }
+            _ => Ok(Initializer::Literal(self.parse_literal()?)),
+        }
+    }
+
+    pub fn parse_field_decl(&mut self) -> Result<FieldDecl, ParserError> {
+        let is_const = match self.current().inner {
+            Token::Const => {
+                self.advance();
+                true
+            }
+            _ => false,
+        };
+        let r#type = self.parse_type()?;
+        let mut decls = vec![];
+        loop {
+            match &self.current().inner {
+                Token::Semicolon => {
+                    self.advance();
+                    break;
+                }
+                _ => {
+                    let declarator = self.parse_field_declarator()?;
+                    let scope = ParseScope::new(self, ParserContext::FieldDecl(declarator.ident().clone()));
+                    let initializer = match self.current().inner {
+                        Token::Assign => {
+                            self.advance();
+                            Some(self.parse_initializer().with_scope(&scope)?)
+                        }
+                        _ => None,
+                    };
+                    decls.push(FieldDeclaration {
+                        declarator,
+                        initializer,
+                    });
+                    match self.current().inner {
+                        Token::Comma => self.advance(),
+                        Token::Semicolon => continue,
+                        _ => unexpected!(self[scope], Token::Comma, Token::Semicolon),
+                    }
+                }
+            }
+        }
+        Ok(FieldDecl {
+            is_const,
+            r#type,
+            decls,
+        })
+    }
+
+    // Parsing method declaration
+
+    pub fn parse_method_decl(&mut self) -> Result<MethodDecl, ParserError> {
+        let return_type = match &self.current().inner {
+            Token::Void => {
+                self.advance();
+                None
+            }
+            _ => Some(self.parse_type()?),
+        };
+        let name = self.parse_ident()?;
+        let scope = ParseScope::new(self, ParserContext::MethodDecl(name.clone()));
+        expect_advance!(self[scope], Token::OpenParen);
+        let mut params = vec![];
+        loop {
+            match &self.current().inner {
+                Token::CloseParen => {
+                    self.advance();
+                    break;
+                }
+                _ => {
+                    let r#type = self.parse_type().with_scope(&scope)?;
+                    let name = self.parse_ident().with_scope(&scope)?;
+                    params.push(MethodParam { r#type, name });
+                    match self.current().inner {
+                        Token::Comma => self.advance(),
+                        Token::CloseParen => continue,
+                        _ => unexpected!(self[scope], Token::Comma, Token::CloseParen),
+                    }
+                }
+            }
+        }
+        let body = self.parse_block().with_scope(&scope)?;
+        Ok(MethodDecl {
+            name,
+            return_type,
+            params,
+            body,
+        })
+    }
+
+    // Parsing import decl
+
+    pub fn parse_import_decl(&mut self) -> Result<ImportDecl, ParserError> {
+        expect_advance!(self, Token::Import);
+        let ident = self.parse_ident()?;
+        expect_advance!(self, Token::Semicolon);
+        Ok(ImportDecl(ident))
+    }
+
+    // Parsing the entire program
+
+    pub fn parse_program(&mut self) -> (Program, Vec<ParserError>) {
+        let mut import_decls = vec![];
+        let mut field_decls = vec![];
+        let mut method_decls = vec![];
+        loop {
+            match &self.current().inner {
+                Token::EndOfFile => break,
+                Token::Import if field_decls.is_empty() && method_decls.is_empty() => {
+                    match self.parse_import_decl() {
+                        Ok(decl) => import_decls.push(decl),
+                        Err(e) => self.panic_recovery(e),
+                    }
+                }
+                Token::Const => match self.parse_field_decl() {
+                    Ok(decl) => field_decls.push(decl),
+                    Err(e) => self.panic_recovery(e),
+                },
+                Token::Void => match self.parse_method_decl() {
+                    Ok(decl) => method_decls.push(decl),
+                    Err(e) => self.panic_recovery(e),
+                },
+                Token::Int | Token::Bool => {
+                    let method = !method_decls.is_empty()
+                        || matches!(self.lookahead(2).inner, Token::OpenParen);
+                    if method {
+                        match self.parse_method_decl() {
+                            Ok(decl) => method_decls.push(decl),
+                            Err(e) => self.panic_recovery(e),
+                        }
+                    } else {
+                        match self.parse_field_decl() {
+                            Ok(decl) => field_decls.push(decl),
+                            Err(e) => self.panic_recovery(e),
+                        }
+                    }
+                }
+                _ => {
+                    let mut expected = vec![Token::Int, Token::Bool, Token::Void];
+                    if field_decls.is_empty() && method_decls.is_empty() {
+                        expected.push(Token::Import);
+                    }
+                    if method_decls.is_empty() {
+                        expected.push(Token::Const);
+                    }
+                    self.panic_recovery(ParserError {
+                        kind: Box::new(ParserErrorKind::UnexpectedToken {
+                            expecting: expected,
+                            found: self.current().clone(),
+                        }),
+                        contexts: vec![],
+                    });
+                    self.advance();
+                }
+            }
+        }
+        let mut errors = self.errors.borrow_mut();
+        let all_errors = errors.clone();
+        errors.clear();
+        (
+            Program {
+                import_decls,
+                field_decls,
+                method_decls,
+            },
+            all_errors,
+        )
+    }
+
+    // Error recovery
+
+    pub fn panic_recovery(&mut self, err: ParserError) {
+        self.advance();
+        loop {
+            match &self.current().inner {
+                // Silently gobble the semicolon and continue parsing.
+                Token::Semicolon => {
+                    self.advance();
+                    break;
+                }
+                Token::CloseBrace // In a block: jump to the closing brace.
+                | Token::EndOfFile // For statements: jump to the next starting statement.
+                | Token::If
+                | Token::While
+                | Token::For
+                | Token::Return
+                | Token::Break
+                | Token::Continue
+                | Token::Const // Or the next declaration?
+                | Token::Bool
+                | Token::Int 
+                => break,
+                _ => self.advance(),
+            }
+        }
+            self.errors.borrow_mut().push(err);
+    }
+}
+
+
+pub(super) struct ParseScope {
+    prev_error_pos: usize,
+    errors: Rc<RefCell<Vec<ParserError>>>,
+    pub(super) context: ParserContext,
+}
+
+impl ParseScope {
+    fn new(parser: &Parser, context: ParserContext) -> Self {
+        Self {
+            prev_error_pos: parser.errors.borrow().len(),
+            errors: parser.errors.clone(),
+            context,
+        }
+    }
+}
+
+impl Drop for ParseScope {
+    fn drop(&mut self) {
+        let mut errors = self.errors.borrow_mut();
+        let new_errors = errors.split_off(self.prev_error_pos);
+        errors.extend(new_errors.into_iter().map(|e| e.with_context(self.context.clone())));
     }
 }

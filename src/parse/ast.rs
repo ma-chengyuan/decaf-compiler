@@ -96,16 +96,28 @@ pub enum Type {
 /// Corresponds to field_decl in the spec.
 #[derive(Debug, Clone)]
 pub struct FieldDecl {
-    is_const: bool,
-    r#type: Type,
-    decls: Vec<FieldDeclaration>,
+    pub is_const: bool,
+    pub r#type: Type,
+    pub decls: Vec<FieldDeclaration>,
 }
 
 /// Defines the name and the dimensions of the field to be declared.
 #[derive(Debug, Clone)]
 pub enum FieldDeclarator {
     Ident(Ident),
-    Array(Box<FieldDeclarator>, IntLiteral), // Use Box<FieldDeclarator> for future support.
+    Array {
+        base: Box<FieldDeclarator>,
+        size: Option<IntLiteral>,
+    }, // Use Box<FieldDeclarator> for future support.
+}
+
+impl FieldDeclarator {
+    pub fn ident(&self) -> &Ident {
+        match self {
+            FieldDeclarator::Ident(ident) => ident,
+            FieldDeclarator::Array { base, .. } => base.ident(),
+        }
+    }
 }
 
 /// Initializer for a field declaration.
@@ -121,8 +133,8 @@ pub enum Initializer {
 /// statement can declare multiple fields.
 #[derive(Debug, Clone)]
 pub struct FieldDeclaration {
-    declarator: FieldDeclarator,
-    initializer: Option<Initializer>,
+    pub declarator: FieldDeclarator,
+    pub initializer: Option<Initializer>,
 }
 
 /// A statement in the language. Corresponds to `statement` in the spec.
@@ -143,6 +155,7 @@ pub enum Stmt {
         init: Expr,
         cond: Expr,
         update: Box<Stmt>, // Constrained to location assign and method call by the parser, for now.
+        block: Block,
     },
     While {
         condition: Expr,
@@ -170,11 +183,12 @@ pub enum UpdateOp {
     SubAssign(Expr),
     MulAssign(Expr),
     DivAssign(Expr),
+    ModAssign(Expr),
 }
 
 /// Corresponds to `import_decl` in the spec.
 #[derive(Debug, Clone)]
-pub struct ImportDecl(Ident);
+pub struct ImportDecl(pub Ident);
 
 #[derive(Debug, Clone)]
 pub struct MethodParam {
@@ -188,7 +202,7 @@ pub struct MethodDecl {
     pub name: Ident,
     pub return_type: Option<Type>,
     pub params: Vec<MethodParam>,
-    pub block: Block,
+    pub body: Block,
 }
 
 /// Corresponds to `program` in the spec.

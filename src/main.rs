@@ -90,7 +90,7 @@ fn main_scan(args: utils::cli::Args, mut writer: Box<dyn std::io::Write>) {
     }
 }
 
-fn main_parse(args: utils::cli::Args, mut writer: Box<dyn std::io::Write>) {
+fn main_parse(args: utils::cli::Args, _writer: Box<dyn std::io::Write>) {
     let (tokens, errors) = scan(args.input);
     if !errors.is_empty() {
         for e in errors {
@@ -99,12 +99,12 @@ fn main_parse(args: utils::cli::Args, mut writer: Box<dyn std::io::Write>) {
         std::process::exit(1);
     }
     let mut parser = Parser::new(tokens);
-    match parser.parse_expr() {
-        Ok(expr) => writeln!(writer, "{:#?}", expr).unwrap(),
-        Err(e) => {
+    let (_, errors) = parser.parse_program();
+    if !errors.is_empty() {
+        for e in errors {
             eprintln!("{}", e);
-            std::process::exit(1);
         }
+        std::process::exit(1);
     }
 }
 
