@@ -212,6 +212,25 @@ impl Parser {
                 self.advance();
                 Ok(RuntimeLiteral::Int(lit))
             }
+            Token::Sub => {
+                self.advance();
+                match &self.current().inner {
+                    Token::IntLiteral(value) => {
+                        let lit = IntLiteral {
+                            inner: -value.try_into().map_err(|_| ParserError {
+                                kind: Box::new(ParserErrorKind::IntegerOutOfRange(
+                                    self.current().clone(),
+                                )),
+                                contexts: vec![],
+                            })?,
+                            span: self.current().span.clone(),
+                        };
+                        self.advance();
+                        Ok(RuntimeLiteral::Int(lit))
+                    }
+                    _ => unexpected!(self, Token::IntLiteral(Default::default())),
+                }
+            }
             Token::BoolLiteral(value) => {
                 let lit = BoolLiteral {
                     inner: *value,
@@ -587,7 +606,8 @@ impl Parser {
                 let mut initializers = Vec::new();
                 delimited! {
                     self, Token::Comma, Token::CloseBrace,
-                    _ => initializers.push(self.parse_initializer()?)
+                    // TODO: support nested initializers
+                    _ => initializers.push(Initializer::Literal(self.parse_literal()?))
                 };
                 if initializers.is_empty() {
                     return Err(ParserError {
