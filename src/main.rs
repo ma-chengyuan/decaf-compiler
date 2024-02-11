@@ -5,7 +5,7 @@ mod utils;
 
 mod scan;
 
-use scan::lexer::{Lexer, LexerError};
+use scan::scanner::{Lexer, ScannerError};
 
 use crate::scan::location::Source;
 
@@ -71,7 +71,7 @@ fn scan(args: utils::cli::Args, mut writer: Box<dyn std::io::Write>) {
                     .collect::<String>();
                 writeln!(writer, "{} {}{}", tok.span.start.line, prefix, content).unwrap();
             }
-            Err(LexerError::EndOfFile) => break,
+            Err(ScannerError::EndOfFile) => break,
             Err(e) => {
                 has_error = true;
                 eprintln!("{}", e);

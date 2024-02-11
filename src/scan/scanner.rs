@@ -12,17 +12,17 @@ use super::{
 };
 
 #[derive(Debug, Clone, Error)]
-pub enum LexerError {
+pub enum ScannerError {
     #[error("{1}: unexpected character {0:?} ({2})")]
-    UnexpectedChar(char, Location, LexerErrorContext),
+    UnexpectedChar(char, Location, ScannerErrorContext),
     #[error("{0}: unexpected end of file ({1})")]
-    UnexpectedEndOfFile(Rc<Source>, LexerErrorContext),
+    UnexpectedEndOfFile(Rc<Source>, ScannerErrorContext),
     #[error("end of file")]
     EndOfFile,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LexerErrorContext {
+pub enum ScannerErrorContext {
     CharLiteral,
     StringLiteral,
     CharClosingQuote,
@@ -33,21 +33,21 @@ pub enum LexerErrorContext {
     ClosingBlockComment,
 }
 
-impl fmt::Display for LexerErrorContext {
+impl fmt::Display for ScannerErrorContext {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            LexerErrorContext::CharLiteral => write!(f, "invalid character in char literal"),
-            LexerErrorContext::StringLiteral => write!(f, "invalid charcter in string literal"),
-            LexerErrorContext::CharClosingQuote => {
+            ScannerErrorContext::CharLiteral => write!(f, "invalid character in char literal"),
+            ScannerErrorContext::StringLiteral => write!(f, "invalid charcter in string literal"),
+            ScannerErrorContext::CharClosingQuote => {
                 write!(f, "expecting closing quote of char literal")
             }
-            LexerErrorContext::StringClosingQuote => {
+            ScannerErrorContext::StringClosingQuote => {
                 write!(f, "expecting closing quote of string literal")
             }
-            LexerErrorContext::EscapeSequence => write!(f, "malformed escape sequence"),
-            LexerErrorContext::OperatorToken => write!(f, "invalid start of operator token"),
-            LexerErrorContext::SingleCharToken => write!(f, "invalid single character token"),
-            LexerErrorContext::ClosingBlockComment => {
+            ScannerErrorContext::EscapeSequence => write!(f, "malformed escape sequence"),
+            ScannerErrorContext::OperatorToken => write!(f, "invalid start of operator token"),
+            ScannerErrorContext::SingleCharToken => write!(f, "invalid single character token"),
+            ScannerErrorContext::ClosingBlockComment => {
                 write!(f, "expecting closing */ of block comment")
             }
         }
@@ -89,7 +89,7 @@ impl Lexer {
         }
     }
 
-    fn next_keyword_bool_id(&mut self) -> Result<TokenWithSpan, LexerError> {
+    fn next_keyword_bool_id(&mut self) -> Result<TokenWithSpan, ScannerError> {
         let start = self.cur_loc.clone();
         let mut identifier = String::new();
         identifier.push(self.cur_char.unwrap());
@@ -130,7 +130,7 @@ impl Lexer {
         })
     }
 
-    fn next_int(&mut self) -> Result<TokenWithSpan, LexerError> {
+    fn next_int(&mut self) -> Result<TokenWithSpan, ScannerError> {
         let start = self.cur_loc.clone();
         let mut value = String::new();
         value.push(self.cur_char.unwrap());
@@ -160,18 +160,18 @@ impl Lexer {
         })
     }
 
-    fn next_char_internal(&mut self, context: LexerErrorContext) -> Result<char, LexerError> {
+    fn next_char_internal(&mut self, context: ScannerErrorContext) -> Result<char, ScannerError> {
         match self.cur_char {
-            None => Err(LexerError::UnexpectedEndOfFile(
+            None => Err(ScannerError::UnexpectedEndOfFile(
                 self.source.clone(),
                 context,
             )),
             Some('\\') => {
                 self.advance();
                 match self.cur_char {
-                    None => Err(LexerError::UnexpectedEndOfFile(
+                    None => Err(ScannerError::UnexpectedEndOfFile(
                         self.source.clone(),
-                        LexerErrorContext::EscapeSequence,
+                        ScannerErrorContext::EscapeSequence,
                     )),
                     // TODO: double quote
                     Some(c @ ('n' | 't' | '\\' | '\'' | '"')) => {
@@ -182,10 +182,10 @@ impl Lexer {
                             _ => Ok(c),
                         }
                     }
-                    Some(_) => Err(LexerError::UnexpectedChar(
+                    Some(_) => Err(ScannerError::UnexpectedChar(
                         self.cur_char.unwrap(),
                         self.cur_loc.clone(),
-                        LexerErrorContext::EscapeSequence,
+                        ScannerErrorContext::EscapeSequence,
                     )),
                 }
             }
@@ -194,7 +194,7 @@ impl Lexer {
                 self.advance();
                 Ok(c)
             }
-            _ => Err(LexerError::UnexpectedChar(
+            _ => Err(ScannerError::UnexpectedChar(
                 self.cur_char.unwrap(),
                 self.cur_loc.clone(),
                 context,
@@ -202,10 +202,10 @@ impl Lexer {
         }
     }
 
-    fn next_char(&mut self) -> Result<TokenWithSpan, LexerError> {
+    fn next_char(&mut self) -> Result<TokenWithSpan, ScannerError> {
         let start = self.cur_loc.clone();
         self.advance(); // Skip opening quote
-        let c = self.next_char_internal(LexerErrorContext::CharLiteral)?;
+        let c = self.next_char_internal(ScannerErrorContext::CharLiteral)?;
         match self.cur_char {
             Some('\'') => {
                 self.advance();
@@ -217,31 +217,31 @@ impl Lexer {
                     },
                 })
             }
-            _ => Err(LexerError::UnexpectedChar(
+            _ => Err(ScannerError::UnexpectedChar(
                 self.cur_char.unwrap(),
                 self.cur_loc.clone(),
-                LexerErrorContext::CharClosingQuote,
+                ScannerErrorContext::CharClosingQuote,
             )),
         }
     }
 
-    fn next_string(&mut self) -> Result<TokenWithSpan, LexerError> {
+    fn next_string(&mut self) -> Result<TokenWithSpan, ScannerError> {
         let start = self.cur_loc.clone();
         self.advance(); // Skip opening quote
         let mut value = String::new();
         loop {
             match self.cur_char {
                 None => {
-                    return Err(LexerError::UnexpectedEndOfFile(
+                    return Err(ScannerError::UnexpectedEndOfFile(
                         self.source.clone(),
-                        LexerErrorContext::StringClosingQuote,
+                        ScannerErrorContext::StringClosingQuote,
                     ))
                 }
                 Some('\"') => {
                     self.advance();
                     break;
                 }
-                Some(_) => value.push(self.next_char_internal(LexerErrorContext::StringLiteral)?),
+                Some(_) => value.push(self.next_char_internal(ScannerErrorContext::StringLiteral)?),
             }
         }
         Ok(TokenWithSpan {
@@ -253,7 +253,7 @@ impl Lexer {
         })
     }
 
-    pub fn next_single_char(&mut self, c: char) -> Result<TokenWithSpan, LexerError> {
+    pub fn next_single_char(&mut self, c: char) -> Result<TokenWithSpan, ScannerError> {
         let start = self.cur_loc.clone();
         let token = match c {
             '(' => Token::OpenParen,
@@ -265,10 +265,10 @@ impl Lexer {
             ';' => Token::Semicolon,
             ',' => Token::Comma,
             _ => {
-                return Err(LexerError::UnexpectedChar(
+                return Err(ScannerError::UnexpectedChar(
                     c,
                     self.cur_loc.clone(),
-                    LexerErrorContext::SingleCharToken,
+                    ScannerErrorContext::SingleCharToken,
                 ))
             }
         };
@@ -282,7 +282,7 @@ impl Lexer {
         })
     }
 
-    pub fn next_div_or_comment(&mut self) -> Result<TokenWithSpan, LexerError> {
+    pub fn next_div_or_comment(&mut self) -> Result<TokenWithSpan, ScannerError> {
         let start = self.cur_loc.clone();
         self.advance();
         match self.cur_char {
@@ -302,9 +302,9 @@ impl Lexer {
                 loop {
                     match self.cur_char {
                         None => {
-                            return Err(LexerError::UnexpectedEndOfFile(
+                            return Err(ScannerError::UnexpectedEndOfFile(
                                 self.source.clone(),
-                                LexerErrorContext::ClosingBlockComment,
+                                ScannerErrorContext::ClosingBlockComment,
                             ))
                         }
                         Some('*') => {
@@ -339,7 +339,7 @@ impl Lexer {
         }
     }
 
-    pub fn next_op(&mut self, c: char) -> Result<TokenWithSpan, LexerError> {
+    pub fn next_op(&mut self, c: char) -> Result<TokenWithSpan, ScannerError> {
         let start = self.cur_loc.clone();
         self.advance();
         let tok = match (c, self.cur_char) {
@@ -400,10 +400,10 @@ impl Lexer {
             }
             ('>', _) => Token::GreaterThan,
             _ => {
-                return Err(LexerError::UnexpectedChar(
+                return Err(ScannerError::UnexpectedChar(
                     c,
                     start.clone(),
-                    LexerErrorContext::OperatorToken,
+                    ScannerErrorContext::OperatorToken,
                 ))
             }
         };
@@ -416,17 +416,17 @@ impl Lexer {
         })
     }
 
-    fn next_whitespace(&mut self) -> Result<TokenWithSpan, LexerError> {
+    fn next_whitespace(&mut self) -> Result<TokenWithSpan, ScannerError> {
         while matches!(self.cur_char, Some(c) if c.is_whitespace()) {
             self.advance();
         }
         self.next()
     }
 
-    pub fn next(&mut self) -> Result<TokenWithSpan, LexerError> {
+    pub fn next(&mut self) -> Result<TokenWithSpan, ScannerError> {
         // Tokenize the next token
         let result = match self.cur_char {
-            None => Err(LexerError::EndOfFile),
+            None => Err(ScannerError::EndOfFile),
             Some(c) => match c {
                 c if c.is_whitespace() => self.next_whitespace(),
                 c if c.is_alphabetic() || c == '_' => self.next_keyword_bool_id(),
@@ -442,9 +442,9 @@ impl Lexer {
         match result {
             Ok(tok) => Ok(tok),
             // Can't recover from end of file
-            Err(e @ (LexerError::EndOfFile | LexerError::UnexpectedEndOfFile(_, _))) => Err(e),
+            Err(e @ (ScannerError::EndOfFile | ScannerError::UnexpectedEndOfFile(_, _))) => Err(e),
             // Skip the offending character and try again
-            Err(e @ LexerError::UnexpectedChar(_, _, _)) => {
+            Err(e @ ScannerError::UnexpectedChar(_, _, _)) => {
                 self.advance();
                 Err(e)
             }
