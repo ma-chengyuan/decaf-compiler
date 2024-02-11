@@ -17,8 +17,6 @@ pub enum ScannerError {
     UnexpectedChar(char, Location, ScannerErrorContext),
     #[error("{0}: unexpected end of file ({1})")]
     UnexpectedEndOfFile(Rc<Source>, ScannerErrorContext),
-    #[error("end of file")]
-    EndOfFile,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,13 +77,15 @@ impl Lexer {
     }
 
     fn advance(&mut self) {
-        self.cur_char = self.all_chars.get(self.cur_loc.offset + 1).cloned();
-        self.cur_loc.offset += 1;
-        if let Some('\n') = self.cur_char {
-            self.cur_loc.line += 1;
-            self.cur_loc.column = 1;
-        } else {
-            self.cur_loc.column += 1;
+        if let Some(_) = self.cur_char {
+            self.cur_char = self.all_chars.get(self.cur_loc.offset + 1).cloned();
+            self.cur_loc.offset += 1;
+            if let Some('\n') = self.cur_char {
+                self.cur_loc.line += 1;
+                self.cur_loc.column = 1;
+            } else {
+                self.cur_loc.column += 1;
+            }
         }
     }
 
@@ -426,7 +426,13 @@ impl Lexer {
     pub fn next(&mut self) -> Result<TokenWithSpan, ScannerError> {
         // Tokenize the next token
         let result = match self.cur_char {
-            None => Err(ScannerError::EndOfFile),
+            None => Ok(TokenWithSpan {
+                token: Token::EndOfFile,
+                span: Span {
+                    start: self.cur_loc.clone(),
+                    end: self.cur_loc.clone(),
+                },
+            }),
             Some(c) => match c {
                 c if c.is_whitespace() => self.next_whitespace(),
                 c if c.is_alphabetic() || c == '_' => self.next_keyword_bool_id(),
@@ -442,7 +448,7 @@ impl Lexer {
         match result {
             Ok(tok) => Ok(tok),
             // Can't recover from end of file
-            Err(e @ (ScannerError::EndOfFile | ScannerError::UnexpectedEndOfFile(_, _))) => Err(e),
+            Err(e @ ScannerError::UnexpectedEndOfFile(_, _)) => Err(e),
             // Skip the offending character and try again
             Err(e @ ScannerError::UnexpectedChar(_, _, _)) => {
                 self.advance();

@@ -71,6 +71,9 @@ pub enum Token {
     LessThanOrEqual,
     GreaterThan,
     GreaterThanOrEqual,
+
+    // A special token to represent the end of file
+    EndOfFile,
 }
 
 #[derive(Debug, Clone)]
