@@ -1,7 +1,5 @@
 use num_bigint::BigInt;
 
-use super::location::Span;
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Token {
     // Keywords
@@ -74,10 +72,4 @@ pub enum Token {
 
     // A special token to represent the end of file
     EndOfFile,
-}
-
-#[derive(Debug, Clone)]
-pub struct TokenWithSpan {
-    pub token: Token,
-    pub span: Span,
 }

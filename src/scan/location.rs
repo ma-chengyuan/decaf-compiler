@@ -44,3 +44,16 @@ impl fmt::Display for Span {
         write!(f, "{}-{}", self.start, self.end)
     }
 }
+
+/// A spanned value, directly convertible from a parsed token.
+#[derive(Clone)]
+pub struct Spanned<T> {
+    pub inner: T,
+    pub span: Span,
+}
+
+impl<T: fmt::Debug> fmt::Debug for Spanned<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self.inner)
+    }
+}

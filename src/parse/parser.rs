@@ -4,8 +4,8 @@ use std::fmt;
 use crate::{
     parse::ast::{BinOp, MethodCallArg},
     scan::{
-        location::Span,
-        token::{Token, TokenWithSpan},
+        location::{Span, Spanned},
+        token::Token,
     },
 };
 
@@ -18,9 +18,9 @@ use super::ast::{
 pub enum ParserError {
     UnexpectedToken {
         expected: Vec<Token>,
-        found: TokenWithSpan,
+        found: Spanned<Token>,
     },
-    IntegerOutOfRange(TokenWithSpan),
+    IntegerOutOfRange(Spanned<Token>),
 }
 
 impl fmt::Display for ParserError {
@@ -30,14 +30,14 @@ impl fmt::Display for ParserError {
                 write!(
                     f,
                     "{:?}: unexpected token {:?}, expected one of {:?}",
-                    found.span.start, found.token, expected
+                    found.span.start, found.inner, expected
                 )
             }
             ParserError::IntegerOutOfRange(token) => {
                 write!(
                     f,
                     "{:?}: integer literal out of range: {:?}",
-                    token.span.start, token.token
+                    token.span.start, token.inner
                 )
             }
         }
@@ -46,55 +46,43 @@ impl fmt::Display for ParserError {
 
 pub struct Parser {
     /// The token stream to parse.
-    tokens: Vec<TokenWithSpan>,
+    tokens: Vec<Spanned<Token>>,
     /// The current position in the token stream.
     pos: usize,
     /// A list of recovered errors.
     errors: Vec<ParserError>,
 }
 
-macro_rules! token {
-    ($p:pat) => {
-        TokenWithSpan { token: $p, .. }
-    };
-    ($p:pat, $s:ident) => {
-        TokenWithSpan {
-            token: $p,
-            span: $s,
-        }
-    };
-}
-
 macro_rules! unexpected {
-    ($tws:expr, $($p:expr),+) => {
+    ($self:ident, $($p:expr),+) => {
         return Err(ParserError::UnexpectedToken {
             expected: vec![$($p),+],
-            found: $tws.clone(),
+            found: $self.current().clone(),
         })
     };
 }
 
 macro_rules! expect_advance {
     ($self:ident, $t:path) => {
-        match $self.current() {
-            token![$t] => {
+        match &$self.current().inner {
+            $t => {
                 $self.advance();
             }
-            t => unexpected!(t, $t),
+            _ => unexpected!($self, $t),
         }
     };
 }
 
 impl Parser {
-    pub fn new(mut tokens: Vec<TokenWithSpan>) -> Self {
+    pub fn new(mut tokens: Vec<Spanned<Token>>) -> Self {
         // Add an EOF token to the end of the token stream for easier parsing.
         match tokens.last() {
-            Some(TokenWithSpan {
-                token: Token::EndOfFile,
+            Some(Spanned {
+                inner: Token::EndOfFile,
                 ..
             }) => {}
-            Some(tok) => tokens.push(TokenWithSpan {
-                token: Token::EndOfFile,
+            Some(tok) => tokens.push(Spanned {
+                inner: Token::EndOfFile,
                 span: Span {
                     start: tok.span.end.clone(),
                     end: tok.span.end.clone(),
@@ -113,32 +101,32 @@ impl Parser {
         self.pos = (self.pos + 1).min(self.tokens.len() - 1);
     }
 
-    pub fn lookahead(&self, by: usize) -> &TokenWithSpan {
+    pub fn lookahead(&self, by: usize) -> &Spanned<Token> {
         &self.tokens[(self.pos + by).min(self.tokens.len() - 1)]
     }
 
-    pub fn current(&self) -> &TokenWithSpan {
+    pub fn current(&self) -> &Spanned<Token> {
         self.lookahead(0)
     }
 
     pub fn parse_ident(&mut self) -> Result<Ident, ParserError> {
-        match self.current() {
-            token![Token::Identifier(ident), span] => {
+        match &self.current().inner {
+            Token::Identifier(ident) => {
                 let ident = Ident {
-                    value: ident.clone(),
-                    span: span.clone(),
+                    inner: ident.clone(),
+                    span: self.current().span.clone(),
                 };
                 self.advance();
                 Ok(ident)
             }
-            t => unexpected!(t, Token::Identifier(Default::default())),
+            _ => unexpected!(self, Token::Identifier(Default::default())),
         }
     }
 
     pub fn parse_location(&mut self) -> Result<Location, ParserError> {
         let ident = self.parse_ident()?;
-        match self.current() {
-            token![Token::OpenBracket] => {
+        match &self.current().inner {
+            Token::OpenBracket => {
                 self.advance();
                 let expr = self.parse_expr()?;
                 expect_advance!(self, Token::CloseBracket);
@@ -156,29 +144,29 @@ impl Parser {
         let mut args = Vec::new();
         expect_advance!(self, Token::OpenParen);
         loop {
-            match self.current() {
-                token![Token::CloseParen] => {
+            match &self.current().inner {
+                Token::CloseParen => {
                     self.advance();
                     break;
                 }
-                token![Token::StringLiteral(value), span] => {
-                    args.push(MethodCallArg::StringLiteral {
-                        value: value.clone(),
-                        span: span.clone(),
-                    });
+                Token::StringLiteral(value) => {
+                    args.push(MethodCallArg::StringLiteral(Spanned {
+                        inner: value.clone(),
+                        span: self.current().span.clone(),
+                    }));
                     self.advance();
-                    match self.current() {
-                        token![Token::Comma] => self.advance(),
-                        token![Token::CloseParen] => continue,
-                        t => unexpected!(t, Token::Comma, Token::CloseParen),
+                    match self.current().inner {
+                        Token::Comma => self.advance(),
+                        Token::CloseParen => continue,
+                        _ => unexpected!(self, Token::Comma, Token::CloseParen),
                     }
                 }
                 _ => {
                     args.push(MethodCallArg::Expr(self.parse_expr()?));
-                    match self.current() {
-                        token![Token::Comma] => self.advance(),
-                        token![Token::CloseParen] => continue,
-                        t => unexpected!(t, Token::Comma, Token::CloseParen),
+                    match self.current().inner {
+                        Token::Comma => self.advance(),
+                        Token::CloseParen => continue,
+                        _ => unexpected!(self, Token::Comma, Token::CloseParen),
                     }
                 }
             }
@@ -187,34 +175,34 @@ impl Parser {
     }
 
     pub fn parse_literal(&mut self) -> Result<RuntimeLiteral, ParserError> {
-        match self.current() {
-            token![Token::IntLiteral(value), span] => {
+        match &self.current().inner {
+            Token::IntLiteral(value) => {
                 let lit = IntLiteral {
-                    value: value
+                    inner: value
                         .try_into()
                         .map_err(|_| ParserError::IntegerOutOfRange(self.current().clone()))?,
-                    span: span.clone(),
+                    span: self.current().span.clone(),
                 };
                 self.advance();
                 Ok(RuntimeLiteral::Int(lit))
             }
-            token![Token::BoolLiteral(value), span] => {
+            Token::BoolLiteral(value) => {
                 let lit = BoolLiteral {
-                    value: *value,
-                    span: span.clone(),
+                    inner: *value,
+                    span: self.current().span.clone(),
                 };
                 self.advance();
                 Ok(RuntimeLiteral::Bool(lit))
             }
-            token![Token::CharLiteral(value), span] => {
+            Token::CharLiteral(value) => {
                 let lit = CharLiteral {
-                    value: *value,
-                    span: span.clone(),
+                    inner: *value,
+                    span: self.current().span.clone(),
                 };
                 Ok(RuntimeLiteral::Char(lit))
             }
-            t => unexpected!(
-                t,
+            _ => unexpected!(
+                self,
                 Token::IntLiteral(Default::default()),
                 Token::BoolLiteral(Default::default()),
                 Token::CharLiteral(Default::default())
@@ -235,14 +223,14 @@ impl Parser {
         // Our beloved operator-precedence parsing algorithm.
         // See https://en.wikipedia.org/wiki/Operator-precedence_parser
         loop {
-            let (op, cur_prec) = token_to_op_and_prec(self.current());
+            let (op, cur_prec) = token_to_op_and_prec(&self.current().inner);
             if cur_prec < min_precedence {
                 break;
             }
             self.advance();
             let mut rhs = self.parse_expr_atom()?;
             loop {
-                let (_, new_prec) = token_to_op_and_prec(self.current());
+                let (_, new_prec) = token_to_op_and_prec(&self.current().inner);
                 if new_prec <= cur_prec {
                     break;
                 } else {
@@ -257,21 +245,21 @@ impl Parser {
         }
         return Ok(lhs);
 
-        fn token_to_op_and_prec(t: &TokenWithSpan) -> (BinOp, i32) {
+        fn token_to_op_and_prec(t: &Token) -> (BinOp, i32) {
             match t {
-                token![Token::Or] => (BinOp::Or, 0),
-                token![Token::And] => (BinOp::And, 1),
-                token![Token::Equal] => (BinOp::Equal, 2),
-                token![Token::Unequal] => (BinOp::NotEqual, 2),
-                token![Token::LessThan] => (BinOp::Less, 3),
-                token![Token::LessThanOrEqual] => (BinOp::LessEqual, 3),
-                token![Token::GreaterThan] => (BinOp::Greater, 3),
-                token![Token::GreaterThanOrEqual] => (BinOp::GreaterEqual, 3),
-                token![Token::Add] => (BinOp::Add, 4),
-                token![Token::Sub] => (BinOp::Sub, 4),
-                token![Token::Mul] => (BinOp::Mul, 5),
-                token![Token::Div] => (BinOp::Div, 5),
-                token![Token::Mod] => (BinOp::Mod, 5),
+                Token::Or => (BinOp::Or, 0),
+                Token::And => (BinOp::And, 1),
+                Token::Equal => (BinOp::Equal, 2),
+                Token::Unequal => (BinOp::NotEqual, 2),
+                Token::LessThan => (BinOp::Less, 3),
+                Token::LessThanOrEqual => (BinOp::LessEqual, 3),
+                Token::GreaterThan => (BinOp::Greater, 3),
+                Token::GreaterThanOrEqual => (BinOp::GreaterEqual, 3),
+                Token::Add => (BinOp::Add, 4),
+                Token::Sub => (BinOp::Sub, 4),
+                Token::Mul => (BinOp::Mul, 5),
+                Token::Div => (BinOp::Div, 5),
+                Token::Mod => (BinOp::Mod, 5),
                 // The exact binop does not matter here, as it will be ignored due to the min_precedence check.
                 _ => (BinOp::Or, i32::min_value()),
             }
@@ -279,31 +267,31 @@ impl Parser {
     }
 
     pub fn parse_expr_atom(&mut self) -> Result<Expr, ParserError> {
-        match self.current() {
-            token![Token::Identifier(_)] => {
-                if matches!(self.lookahead(1), token![Token::OpenParen]) {
+        match self.current().inner {
+            Token::Identifier(_) => {
+                if matches!(self.lookahead(1).inner, Token::OpenParen) {
                     Ok(Expr::Call(self.parse_call()?))
                 } else {
                     Ok(Expr::Location(self.parse_location()?))
                 }
             }
-            token![Token::IntLiteral(_)]
-            | token![Token::BoolLiteral(_)]
-            | token![Token::CharLiteral(_)] => Ok(Expr::Literal(self.parse_literal()?)),
-            token![Token::Len] => {
+            Token::IntLiteral(_) | Token::BoolLiteral(_) | Token::CharLiteral(_) => {
+                Ok(Expr::Literal(self.parse_literal()?))
+            }
+            Token::Len => {
                 self.advance();
                 expect_advance!(self, Token::OpenParen);
                 let ident = self.parse_ident()?;
                 expect_advance!(self, Token::CloseParen);
                 Ok(Expr::Len(ident))
             }
-            token![Token::OpenParen] => {
+            Token::OpenParen => {
                 self.advance();
                 let expr = self.parse_expr()?;
                 expect_advance!(self, Token::CloseParen);
                 Ok(expr)
             }
-            token![Token::Sub] => {
+            Token::Sub => {
                 self.advance();
                 let expr = self.parse_expr_atom()?;
                 Ok(Expr::UnaryOp {
@@ -311,7 +299,7 @@ impl Parser {
                     expr: Box::new(expr),
                 })
             }
-            token![Token::Not] => {
+            Token::Not => {
                 self.advance();
                 let expr = self.parse_expr_atom()?;
                 Ok(Expr::UnaryOp {

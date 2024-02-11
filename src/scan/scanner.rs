@@ -7,16 +7,51 @@ use std::fmt;
 use thiserror::Error;
 
 use super::{
-    location::{Location, Source, Span},
-    token::{Token, TokenWithSpan},
+    location::{Location, Source, Span, Spanned},
+    token::Token,
 };
 
 #[derive(Debug, Clone, Error)]
-pub enum ScannerError {
-    #[error("{1}: unexpected character {0:?} ({2})")]
-    UnexpectedChar(char, Location, ScannerErrorContext),
-    #[error("{0}: unexpected end of file ({1})")]
-    UnexpectedEndOfFile(Rc<Source>, ScannerErrorContext),
+pub struct ScannerError {
+    location: Location,
+    context: ScannerErrorContext,
+    expecting: ScannerExpecting,
+    found: Option<char>,
+}
+
+impl fmt::Display for ScannerError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let found = match self.found {
+            Some(c) => format!("{:?}", c),
+            None => "end of file".to_string(),
+        };
+        write!(
+            f,
+            "{}: expecting {}, found {} ({})",
+            self.location, self.expecting, found, self.context
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum ScannerExpecting {
+    Char(char),
+    OneOf(&'static str),
+    PrintableOrExcape,
+    EscapeSequence,
+}
+
+impl fmt::Display for ScannerExpecting {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ScannerExpecting::Char(c) => write!(f, "{:?}", c),
+            ScannerExpecting::OneOf(s) => write!(f, "one of \"{}\"", s),
+            ScannerExpecting::PrintableOrExcape => write!(f, "printable character or '\\'"),
+            ScannerExpecting::EscapeSequence => {
+                write!(f, "escape sequence (one of n, t, \\, \", \')")
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,16 +87,16 @@ impl fmt::Display for ScannerErrorContext {
     }
 }
 
-pub struct Lexer {
+pub struct Scanner {
     cur_char: Option<char>,
     cur_loc: Location,
     all_chars: Vec<char>,
     source: Rc<Source>,
 }
 
-impl Lexer {
+impl Scanner {
     pub fn new(source: Rc<Source>) -> Self {
-        let mut lexer = Lexer {
+        let mut lexer = Scanner {
             cur_char: None,
             cur_loc: Location {
                 source: source.clone(),
@@ -89,7 +124,7 @@ impl Lexer {
         }
     }
 
-    fn next_keyword_bool_id(&mut self) -> Result<TokenWithSpan, ScannerError> {
+    fn next_keyword_bool_id(&mut self) -> Result<Spanned<Token>, ScannerError> {
         let start = self.cur_loc.clone();
         let mut identifier = String::new();
         identifier.push(self.cur_char.unwrap());
@@ -121,8 +156,8 @@ impl Lexer {
             "void" => Token::Void,
             _ => Token::Identifier(identifier),
         };
-        Ok(TokenWithSpan {
-            token,
+        Ok(Spanned {
+            inner: token,
             span: Span {
                 start,
                 end: self.cur_loc.clone(),
@@ -130,7 +165,7 @@ impl Lexer {
         })
     }
 
-    fn next_int(&mut self) -> Result<TokenWithSpan, ScannerError> {
+    fn next_int(&mut self) -> Result<Spanned<Token>, ScannerError> {
         let start = self.cur_loc.clone();
         let mut value = String::new();
         value.push(self.cur_char.unwrap());
@@ -151,8 +186,8 @@ impl Lexer {
                 _ => break,
             }
         }
-        Ok(TokenWithSpan {
-            token: Token::IntLiteral(BigInt::parse_bytes(value.as_bytes(), base).unwrap()),
+        Ok(Spanned {
+            inner: Token::IntLiteral(BigInt::parse_bytes(value.as_bytes(), base).unwrap()),
             span: Span {
                 start,
                 end: self.cur_loc.clone(),
@@ -162,18 +197,9 @@ impl Lexer {
 
     fn next_char_internal(&mut self, context: ScannerErrorContext) -> Result<char, ScannerError> {
         match self.cur_char {
-            None => Err(ScannerError::UnexpectedEndOfFile(
-                self.source.clone(),
-                context,
-            )),
             Some('\\') => {
                 self.advance();
                 match self.cur_char {
-                    None => Err(ScannerError::UnexpectedEndOfFile(
-                        self.source.clone(),
-                        ScannerErrorContext::EscapeSequence,
-                    )),
-                    // TODO: double quote
                     Some(c @ ('n' | 't' | '\\' | '\'' | '"')) => {
                         self.advance();
                         match c {
@@ -182,11 +208,12 @@ impl Lexer {
                             _ => Ok(c),
                         }
                     }
-                    Some(_) => Err(ScannerError::UnexpectedChar(
-                        self.cur_char.unwrap(),
-                        self.cur_loc.clone(),
-                        ScannerErrorContext::EscapeSequence,
-                    )),
+                    found => Err(ScannerError {
+                        location: self.cur_loc.clone(),
+                        context,
+                        expecting: ScannerExpecting::EscapeSequence,
+                        found,
+                    }),
                 }
             }
             // Printable ASCII character except for single quote and double quote
@@ -194,48 +221,52 @@ impl Lexer {
                 self.advance();
                 Ok(c)
             }
-            _ => Err(ScannerError::UnexpectedChar(
-                self.cur_char.unwrap(),
-                self.cur_loc.clone(),
+            found => Err(ScannerError {
+                location: self.cur_loc.clone(),
                 context,
-            )),
+                expecting: ScannerExpecting::PrintableOrExcape,
+                found,
+            }),
         }
     }
 
-    fn next_char(&mut self) -> Result<TokenWithSpan, ScannerError> {
+    fn next_char(&mut self) -> Result<Spanned<Token>, ScannerError> {
         let start = self.cur_loc.clone();
         self.advance(); // Skip opening quote
         let c = self.next_char_internal(ScannerErrorContext::CharLiteral)?;
         match self.cur_char {
             Some('\'') => {
                 self.advance();
-                Ok(TokenWithSpan {
-                    token: Token::CharLiteral(c),
+                Ok(Spanned {
+                    inner: Token::CharLiteral(c),
                     span: Span {
                         start,
                         end: self.cur_loc.clone(),
                     },
                 })
             }
-            _ => Err(ScannerError::UnexpectedChar(
-                self.cur_char.unwrap(),
-                self.cur_loc.clone(),
-                ScannerErrorContext::CharClosingQuote,
-            )),
+            found => Err(ScannerError {
+                location: self.cur_loc.clone(),
+                context: ScannerErrorContext::CharClosingQuote,
+                expecting: ScannerExpecting::Char('\''),
+                found,
+            }),
         }
     }
 
-    fn next_string(&mut self) -> Result<TokenWithSpan, ScannerError> {
+    fn next_string(&mut self) -> Result<Spanned<Token>, ScannerError> {
         let start = self.cur_loc.clone();
         self.advance(); // Skip opening quote
         let mut value = String::new();
         loop {
             match self.cur_char {
                 None => {
-                    return Err(ScannerError::UnexpectedEndOfFile(
-                        self.source.clone(),
-                        ScannerErrorContext::StringClosingQuote,
-                    ))
+                    return Err(ScannerError {
+                        location: self.cur_loc.clone(),
+                        context: ScannerErrorContext::StringLiteral,
+                        expecting: ScannerExpecting::Char('"'),
+                        found: None,
+                    })
                 }
                 Some('\"') => {
                     self.advance();
@@ -244,8 +275,8 @@ impl Lexer {
                 Some(_) => value.push(self.next_char_internal(ScannerErrorContext::StringLiteral)?),
             }
         }
-        Ok(TokenWithSpan {
-            token: Token::StringLiteral(value),
+        Ok(Spanned {
+            inner: Token::StringLiteral(value),
             span: Span {
                 start,
                 end: self.cur_loc.clone(),
@@ -253,7 +284,7 @@ impl Lexer {
         })
     }
 
-    pub fn next_single_char(&mut self, c: char) -> Result<TokenWithSpan, ScannerError> {
+    pub fn next_single_char(&mut self, c: char) -> Result<Spanned<Token>, ScannerError> {
         let start = self.cur_loc.clone();
         let token = match c {
             '(' => Token::OpenParen,
@@ -265,16 +296,17 @@ impl Lexer {
             ';' => Token::Semicolon,
             ',' => Token::Comma,
             _ => {
-                return Err(ScannerError::UnexpectedChar(
-                    c,
-                    self.cur_loc.clone(),
-                    ScannerErrorContext::SingleCharToken,
-                ))
+                return Err(ScannerError {
+                    location: self.cur_loc.clone(),
+                    context: ScannerErrorContext::SingleCharToken,
+                    expecting: ScannerExpecting::OneOf("()[]{};,"),
+                    found: Some(c),
+                })
             }
         };
         self.advance();
-        Ok(TokenWithSpan {
-            token,
+        Ok(Spanned {
+            inner: token,
             span: Span {
                 start,
                 end: self.cur_loc.clone(),
@@ -282,7 +314,7 @@ impl Lexer {
         })
     }
 
-    pub fn next_div_or_comment(&mut self) -> Result<TokenWithSpan, ScannerError> {
+    pub fn next_div_or_comment(&mut self) -> Result<Spanned<Token>, ScannerError> {
         let start = self.cur_loc.clone();
         self.advance();
         match self.cur_char {
@@ -302,10 +334,12 @@ impl Lexer {
                 loop {
                     match self.cur_char {
                         None => {
-                            return Err(ScannerError::UnexpectedEndOfFile(
-                                self.source.clone(),
-                                ScannerErrorContext::ClosingBlockComment,
-                            ))
+                            return Err(ScannerError {
+                                location: self.cur_loc.clone(),
+                                context: ScannerErrorContext::ClosingBlockComment,
+                                expecting: ScannerExpecting::Char('*'),
+                                found: None,
+                            })
                         }
                         Some('*') => {
                             self.advance();
@@ -321,16 +355,16 @@ impl Lexer {
             }
             Some('=') => {
                 self.advance();
-                Ok(TokenWithSpan {
-                    token: Token::DivAssign,
+                Ok(Spanned {
+                    inner: Token::DivAssign,
                     span: Span {
                         start,
                         end: self.cur_loc.clone(),
                     },
                 })
             }
-            _ => Ok(TokenWithSpan {
-                token: Token::Div,
+            _ => Ok(Spanned {
+                inner: Token::Div,
                 span: Span {
                     start,
                     end: self.cur_loc.clone(),
@@ -339,10 +373,10 @@ impl Lexer {
         }
     }
 
-    pub fn next_op(&mut self, c: char) -> Result<TokenWithSpan, ScannerError> {
+    pub fn next_op(&mut self, c: char) -> Result<Spanned<Token>, ScannerError> {
         let start = self.cur_loc.clone();
         self.advance();
-        let tok = match (c, self.cur_char) {
+        let token = match (c, self.cur_char) {
             ('+', Some('=')) => {
                 self.advance();
                 Token::AddAssign
@@ -385,9 +419,25 @@ impl Lexer {
                 self.advance();
                 Token::And
             }
+            ('&', found) => {
+                return Err(ScannerError {
+                    location: self.cur_loc.clone(),
+                    context: ScannerErrorContext::OperatorToken,
+                    expecting: ScannerExpecting::Char('&'),
+                    found,
+                })
+            }
             ('|', Some('|')) => {
                 self.advance();
                 Token::Or
+            }
+            ('|', found) => {
+                return Err(ScannerError {
+                    location: self.cur_loc.clone(),
+                    context: ScannerErrorContext::OperatorToken,
+                    expecting: ScannerExpecting::Char('|'),
+                    found,
+                })
             }
             ('<', Some('=')) => {
                 self.advance();
@@ -400,15 +450,16 @@ impl Lexer {
             }
             ('>', _) => Token::GreaterThan,
             _ => {
-                return Err(ScannerError::UnexpectedChar(
-                    c,
-                    start.clone(),
-                    ScannerErrorContext::OperatorToken,
-                ))
+                return Err(ScannerError {
+                    location: self.cur_loc.clone(),
+                    context: ScannerErrorContext::OperatorToken,
+                    expecting: ScannerExpecting::OneOf("+-*/%!&|<>=,"),
+                    found: Some(c),
+                })
             }
         };
-        Ok(TokenWithSpan {
-            token: tok,
+        Ok(Spanned {
+            inner: token,
             span: Span {
                 start,
                 end: self.cur_loc.clone(),
@@ -416,18 +467,18 @@ impl Lexer {
         })
     }
 
-    fn next_whitespace(&mut self) -> Result<TokenWithSpan, ScannerError> {
+    fn next_whitespace(&mut self) -> Result<Spanned<Token>, ScannerError> {
         while matches!(self.cur_char, Some(c) if c.is_whitespace()) {
             self.advance();
         }
         self.next()
     }
 
-    pub fn next(&mut self) -> Result<TokenWithSpan, ScannerError> {
+    pub fn next(&mut self) -> Result<Spanned<Token>, ScannerError> {
         // Tokenize the next token
         let result = match self.cur_char {
-            None => Ok(TokenWithSpan {
-                token: Token::EndOfFile,
+            None => Ok(Spanned {
+                inner: Token::EndOfFile,
                 span: Span {
                     start: self.cur_loc.clone(),
                     end: self.cur_loc.clone(),
@@ -447,10 +498,7 @@ impl Lexer {
         // Error recovery
         match result {
             Ok(tok) => Ok(tok),
-            // Can't recover from end of file
-            Err(e @ ScannerError::UnexpectedEndOfFile(_, _)) => Err(e),
-            // Skip the offending character and try again
-            Err(e @ ScannerError::UnexpectedChar(_, _, _)) => {
+            Err(e) => {
                 self.advance();
                 Err(e)
             }

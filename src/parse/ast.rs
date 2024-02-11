@@ -1,25 +1,11 @@
 #![allow(dead_code)]
-use crate::scan::location::Span;
-use std::fmt;
-
-/// A spanned value, directly convertible from a parsed token.
-#[derive(Clone)]
-pub struct Spanned<T> {
-    pub value: T,
-    pub span: Span,
-}
+use crate::scan::location::Spanned;
 
 pub type Ident = Spanned<String>;
 pub type IntLiteral = Spanned<i64>;
 pub type BoolLiteral = Spanned<bool>;
 pub type CharLiteral = Spanned<char>;
 pub type StringLiteral = Spanned<String>;
-
-impl<T: fmt::Debug> fmt::Debug for Spanned<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}", self.value)
-    }
-}
 
 /// Literal value of runtime values.
 #[derive(Debug, Clone)]
@@ -45,7 +31,7 @@ pub enum Location {
 #[derive(Debug, Clone)]
 pub enum MethodCallArg {
     Expr(Expr),
-    StringLiteral { value: String, span: Span },
+    StringLiteral(StringLiteral),
 }
 
 /// A method call.

@@ -8,8 +8,9 @@ mod scan;
 
 use parse::parser::Parser;
 use scan::{
-    scanner::{Lexer, ScannerError},
-    token::{Token, TokenWithSpan},
+    location::Spanned,
+    scanner::{Scanner, ScannerError},
+    token::Token,
 };
 
 use crate::scan::location::Source;
@@ -56,16 +57,16 @@ fn main_scan(args: utils::cli::Args, mut writer: Box<dyn std::io::Write>) {
         filename: args.input.to_string_lossy().to_string(),
         content,
     });
-    let mut lexer = Lexer::new(source);
+    let mut lexer = Scanner::new(source);
     let mut has_error = false;
     loop {
         match lexer.next() {
-            Ok(TokenWithSpan {
-                token: Token::EndOfFile,
+            Ok(Spanned {
+                inner: Token::EndOfFile,
                 ..
             }) => break,
             Ok(tok) => {
-                let prefix = match &tok.token {
+                let prefix = match &tok.inner {
                     scan::token::Token::Identifier(_) => "IDENTIFIER ",
                     scan::token::Token::IntLiteral(_) => "INTLITERAL ",
                     scan::token::Token::CharLiteral(_) => "CHARLITERAL ",
@@ -107,18 +108,18 @@ fn main_parse(args: utils::cli::Args, mut writer: Box<dyn std::io::Write>) {
     }
 }
 
-fn scan(path: impl AsRef<Path>) -> (Vec<TokenWithSpan>, Vec<ScannerError>) {
+fn scan(path: impl AsRef<Path>) -> (Vec<Spanned<Token>>, Vec<ScannerError>) {
     let filename = path.as_ref().to_string_lossy().to_string();
     let content = std::fs::read_to_string(path).expect("error reading file");
     let source = Rc::new(Source { filename, content });
-    let mut lexer = Lexer::new(source);
+    let mut lexer = Scanner::new(source);
     let mut tokens = vec![];
     let mut errors = vec![];
     let mut eof = false;
     while !eof {
         match lexer.next() {
             Ok(tok) => {
-                eof |= matches!(tok.token, Token::EndOfFile);
+                eof |= matches!(tok.inner, Token::EndOfFile);
                 tokens.push(tok);
             }
             Err(e) => errors.push(e),
