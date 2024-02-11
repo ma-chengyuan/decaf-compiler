@@ -203,10 +203,7 @@ impl Parser {
         match &self.current().inner {
             Token::IntLiteral(value) => {
                 let lit = IntLiteral {
-                    inner: value.try_into().map_err(|_| ParserError {
-                        kind: Box::new(ParserErrorKind::IntegerOutOfRange(self.current().clone())),
-                        contexts: vec![],
-                    })?,
+                    inner: value.clone(),
                     span: self.current().span.clone(),
                 };
                 self.advance();
@@ -217,12 +214,7 @@ impl Parser {
                 match &self.current().inner {
                     Token::IntLiteral(value) => {
                         let lit = IntLiteral {
-                            inner: -value.try_into().map_err(|_| ParserError {
-                                kind: Box::new(ParserErrorKind::IntegerOutOfRange(
-                                    self.current().clone(),
-                                )),
-                                contexts: vec![],
-                            })?,
+                            inner: -value,
                             span: self.current().span.clone(),
                         };
                         self.advance();
@@ -566,15 +558,7 @@ impl Parser {
                 let size = match &self.current().inner {
                     Token::IntLiteral(value) => {
                         let spanned = Spanned {
-                            inner: value
-                                .try_into()
-                                .map_err(|_| ParserError {
-                                    kind: Box::new(ParserErrorKind::IntegerOutOfRange(
-                                        self.current().clone(),
-                                    )),
-                                    contexts: vec![],
-                                })
-                                .with_scope(&scope)?,
+                            inner: value.clone(),
                             span: self.current().span.clone(),
                         };
 

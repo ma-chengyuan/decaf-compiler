@@ -1,8 +1,10 @@
 #![allow(dead_code)]
+use num_bigint::BigInt;
+
 use crate::scan::location::Spanned;
 
 pub type Ident = Spanned<String>;
-pub type IntLiteral = Spanned<i64>;
+pub type IntLiteral = Spanned<BigInt>;
 pub type BoolLiteral = Spanned<bool>;
 pub type CharLiteral = Spanned<char>;
 pub type StringLiteral = Spanned<String>;

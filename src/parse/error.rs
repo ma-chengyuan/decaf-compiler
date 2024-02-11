@@ -34,8 +34,6 @@ pub enum ParserErrorKind {
         expecting: Vec<Token>,
         found: Spanned<Token>,
     },
-    // Integer literal out of range
-    IntegerOutOfRange(Spanned<Token>),
     // Empty initializer in array declaration, token points to the opening brace
     EmptyInitializer(Spanned<Token>),
     // Empty field declaration, token points to the semicolon
@@ -50,13 +48,6 @@ impl fmt::Display for ParserErrorKind {
                     f,
                     "{}: unexpected token {:?}, expected one of {:?}",
                     found.span.start, found.inner, expecting
-                )
-            }
-            ParserErrorKind::IntegerOutOfRange(token) => {
-                write!(
-                    f,
-                    "{}: integer literal out of range: {:?}",
-                    token.span.start, token.inner
                 )
             }
             ParserErrorKind::EmptyInitializer(token) => {
