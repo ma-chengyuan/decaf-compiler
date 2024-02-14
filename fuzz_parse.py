@@ -209,10 +209,7 @@ def fuzz_test():
     stdout, stderr = proc.communicate()
     if proc.returncode != 0:
         print("FAILED")
-        print(
-            "\n".join("    " + s for s in stderr.decode("utf-8").strip().splitlines())
-        )
-        print("=" * 100)
+        print(stderr.decode("utf-8"))
         exit(1)
 
 
