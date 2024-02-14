@@ -16,7 +16,7 @@ use super::{
         ImportDecl, Initializer, IntLiteral, Location, MethodCall, MethodDecl, Program,
         RuntimeLiteral, Stmt, Type, UnaryOp, UpdateOp,
     },
-    error::{ParseErrorExt, ParserError, ParserErrorKind},
+    error::{ParserError, ParserErrorKind},
 };
 
 #[derive(Debug, Clone)]
@@ -32,27 +32,17 @@ pub struct Parser {
     /// The current position in the token stream.
     pos: usize,
     /// A list of recovered errors.
-    errors: Rc<RefCell<Vec<ParserError>>>,
+    errors: Vec<ParserError>,
+    /// A list of parser contexts, from the outermost to the innermost.
+    contexts: Rc<RefCell<Vec<ParserContext>>>,
 }
 
 macro_rules! unexpected {
     ($self:ident, $($p:expr),+) => {
-        return Err(ParserError {
-            kind: Box::new(ParserErrorKind::UnexpectedToken {
-                expecting: vec![$($p),+],
-                found: $self.current().clone(),
-            }),
-            contexts: vec![]
-        })
-    };
-    ($self:ident[$scope:ident], $($p:expr),+) => {
-        return Err(ParserError {
-            kind: Box::new(ParserErrorKind::UnexpectedToken {
-                expecting: vec![$($p),+],
-                found: $self.current().clone(),
-            }),
-            contexts: vec![$scope.context.clone()]
-        })
+        return Err($self.make_error(ParserErrorKind::UnexpectedToken {
+            expecting: vec![$($p),+],
+            found: $self.current().clone(),
+        }))
     };
 }
 
@@ -63,14 +53,6 @@ macro_rules! expect_advance {
                 $self.advance();
             }
             _ => unexpected!($self, $t),
-        }
-    };
-    ($self:ident[$scope:ident], $t:path) => {
-        match &$self.current().inner {
-            $t => {
-                $self.advance();
-            }
-            _ => unexpected!($self[$scope], $t),
         }
     };
 }
@@ -91,24 +73,6 @@ macro_rules! delimited {
                 },)*
                 #[allow(unreachable_patterns)]
                 _ => unexpected!($self, $delimiter, $close),
-            }
-        }
-    }};
-    ($self:ident[$scope:ident], $delimiter:path, $close:path, $($matcher:pat $(if $pred:expr)* => $result:expr),*) => {{
-        let mut empty = true;
-        loop {
-            match &$self.current().inner {
-                $close if empty => { $self.advance(); break; }
-                $($matcher $(if $pred)* => {
-                    $result;
-                    match &$self.current().inner {
-                        $delimiter => { $self.advance(); empty = false; continue; }
-                        $close => { $self.advance(); break; },
-                        _ => unexpected!($self[$scope], $delimiter, $close),
-                    }
-                },)*
-                #[allow(unreachable_patterns)]
-                _ => unexpected!($self[$scope], $delimiter, $close),
             }
         }
     }};
@@ -134,7 +98,15 @@ impl Parser {
         Self {
             tokens,
             pos: 0,
-            errors: Default::default(),
+            errors: vec![],
+            contexts: Default::default(),
+        }
+    }
+
+    fn make_error(&self, kind: ParserErrorKind) -> ParserError {
+        ParserError {
+            kind: Box::new(kind),
+            contexts: self.contexts.borrow().clone(),
         }
     }
 
@@ -182,11 +154,11 @@ impl Parser {
 
     pub fn parse_call(&mut self) -> Result<MethodCall, ParserError> {
         let name = self.parse_ident()?;
-        let scope = ParseScope::new(self, ParserContext::MethodCall(name.clone()));
+        let _scope = ParseScope::new(self, ParserContext::MethodCall(name.clone()));
         let mut args = Vec::new();
-        expect_advance!(self[scope], Token::OpenParen);
+        expect_advance!(self, Token::OpenParen);
         delimited! {
-            self[scope], Token::Comma, Token::CloseParen,
+            self, Token::Comma, Token::CloseParen,
             Token::StringLiteral(value) => {
                 args.push(MethodCallArg::StringLiteral(Spanned {
                     inner: value.clone(),
@@ -194,7 +166,7 @@ impl Parser {
                 }));
                 self.advance();
             },
-            _ => args.push(MethodCallArg::Expr(self.parse_expr().with_scope(&scope)?))
+            _ => args.push(MethodCallArg::Expr(self.parse_expr()?))
         }
         Ok(MethodCall { name, args })
     }
@@ -553,7 +525,7 @@ impl Parser {
         match self.current().inner {
             Token::OpenBracket => {
                 self.advance();
-                let scope =
+                let _scope =
                     ParseScope::new(self, ParserContext::FieldDecl(declarator.ident().clone()));
                 let size = match &self.current().inner {
                     Token::IntLiteral(value) => {
@@ -567,12 +539,12 @@ impl Parser {
                     }
                     Token::CloseBracket => None,
                     _ => unexpected!(
-                        self[scope],
+                        self,
                         Token::IntLiteral(Default::default()),
                         Token::CloseBracket
                     ),
                 };
-                expect_advance!(self[scope], Token::CloseBracket);
+                expect_advance!(self, Token::CloseBracket);
                 Ok(FieldDeclarator::Array {
                     base: Box::new(declarator),
                     size,
@@ -594,10 +566,7 @@ impl Parser {
                     _ => initializers.push(Initializer::Literal(self.parse_literal()?))
                 };
                 if initializers.is_empty() {
-                    return Err(ParserError {
-                        kind: Box::new(ParserErrorKind::EmptyInitializer(token)),
-                        contexts: vec![],
-                    });
+                    return Err(self.make_error(ParserErrorKind::EmptyInitializer(token)));
                 }
                 Ok(Initializer::Array(initializers))
             }
@@ -619,12 +588,12 @@ impl Parser {
             self, Token::Comma, Token::Semicolon,
             _ => {
                 let declarator = self.parse_field_declarator()?;
-                let scope =
+                let _scope =
                     ParseScope::new(self, ParserContext::FieldDecl(declarator.ident().clone()));
                 let initializer = match self.current().inner {
                     Token::Assign => {
                         self.advance();
-                        Some(self.parse_initializer().with_scope(&scope)?)
+                        Some(self.parse_initializer()?)
                     }
                     _ => None,
                 };
@@ -635,10 +604,7 @@ impl Parser {
             }
         }
         if decls.is_empty() {
-            return Err(ParserError {
-                kind: Box::new(ParserErrorKind::EmptyFieldDecl(self.current().clone())),
-                contexts: vec![],
-            });
+            return Err(self.make_error(ParserErrorKind::EmptyFieldDecl(self.current().clone())));
         }
         Ok(FieldDecl {
             is_const,
@@ -658,18 +624,18 @@ impl Parser {
             _ => Some(self.parse_type()?),
         };
         let name = self.parse_ident()?;
-        let scope = ParseScope::new(self, ParserContext::MethodDecl(name.clone()));
-        expect_advance!(self[scope], Token::OpenParen);
+        let _scope = ParseScope::new(self, ParserContext::MethodDecl(name.clone()));
+        expect_advance!(self, Token::OpenParen);
         let mut params = vec![];
         delimited! {
-            self[scope], Token::Comma, Token::CloseParen,
+            self, Token::Comma, Token::CloseParen,
             _ => {
-                let r#type = self.parse_type().with_scope(&scope)?;
-                let name = self.parse_ident().with_scope(&scope)?;
+                let r#type = self.parse_type()?;
+                let name = self.parse_ident()?;
                 params.push(MethodParam { r#type, name });
             }
         }
-        let body = self.parse_block().with_scope(&scope)?;
+        let body = self.parse_block()?;
         Ok(MethodDecl {
             name,
             return_type,
@@ -734,20 +700,16 @@ impl Parser {
                     if method_decls.is_empty() {
                         expected.push(Token::Const);
                     }
-                    self.panic_recovery(ParserError {
-                        kind: Box::new(ParserErrorKind::UnexpectedToken {
-                            expecting: expected,
-                            found: self.current().clone(),
-                        }),
-                        contexts: vec![],
-                    });
+                    self.panic_recovery(self.make_error(ParserErrorKind::UnexpectedToken {
+                        expecting: expected,
+                        found: self.current().clone(),
+                    }));
                     self.advance();
                 }
             }
         }
-        let mut errors = self.errors.borrow_mut();
-        let all_errors = errors.clone();
-        errors.clear();
+        let all_errors = self.errors.clone();
+        self.errors.clear();
         (
             Program {
                 import_decls,
@@ -783,34 +745,29 @@ impl Parser {
                 _ => self.advance(),
             }
         }
-        self.errors.borrow_mut().push(err);
+        self.errors.push(err);
     }
 }
 
-pub(super) struct ParseScope {
-    prev_error_pos: usize,
-    errors: Rc<RefCell<Vec<ParserError>>>,
-    pub(super) context: ParserContext,
+struct ParseScope {
+    contexts: Rc<RefCell<Vec<ParserContext>>>,
 }
 
 impl ParseScope {
     fn new(parser: &Parser, context: ParserContext) -> Self {
+        {
+            let mut contexts = parser.contexts.borrow_mut();
+            contexts.push(context);
+        }
         Self {
-            prev_error_pos: parser.errors.borrow().len(),
-            errors: parser.errors.clone(),
-            context,
+            contexts: parser.contexts.clone(),
         }
     }
 }
 
 impl Drop for ParseScope {
     fn drop(&mut self) {
-        let mut errors = self.errors.borrow_mut();
-        let new_errors = errors.split_off(self.prev_error_pos);
-        errors.extend(
-            new_errors
-                .into_iter()
-                .map(|e| e.with_context(self.context.clone())),
-        );
+        let mut contexts = self.contexts.borrow_mut();
+        contexts.pop();
     }
 }

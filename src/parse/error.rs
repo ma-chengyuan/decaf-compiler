@@ -2,7 +2,7 @@ use std::fmt;
 
 use crate::scan::{location::Spanned, token::Token};
 
-use super::parser::{ParseScope, ParserContext};
+use super::parser::ParserContext;
 
 #[derive(Debug, Clone)]
 pub struct ParserError {
@@ -64,23 +64,23 @@ impl fmt::Display for ParserErrorKind {
     }
 }
 
-pub(super) trait ParseErrorExt: Sized {
-    fn with_context(self, ctx: ParserContext) -> Self;
+// pub(super) trait ParseErrorExt: Sized {
+//     fn with_context(self, ctx: ParserContext) -> Self;
 
-    fn with_scope(self, scope: &ParseScope) -> Self {
-        self.with_context(scope.context.clone())
-    }
-}
+//     fn with_scope(self, scope: &ParseScope) -> Self {
+//         self.with_context(scope.context.clone())
+//     }
+// }
 
-impl ParseErrorExt for ParserError {
-    fn with_context(mut self, ctx: ParserContext) -> Self {
-        self.contexts.push(ctx);
-        self
-    }
-}
+// impl ParseErrorExt for ParserError {
+//     fn with_context(mut self, ctx: ParserContext) -> Self {
+//         self.contexts.push(ctx);
+//         self
+//     }
+// }
 
-impl<T> ParseErrorExt for Result<T, ParserError> {
-    fn with_context(self, ctx: ParserContext) -> Self {
-        self.map_err(|e| e.with_context(ctx))
-    }
-}
+// impl<T> ParseErrorExt for Result<T, ParserError> {
+//     fn with_context(self, ctx: ParserContext) -> Self {
+//         self.map_err(|e| e.with_context(ctx))
+//     }
+// }
