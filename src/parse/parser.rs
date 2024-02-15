@@ -46,7 +46,8 @@ macro_rules! unexpected {
     };
 }
 
-macro_rules! expect_advance {
+/// Expects and consumes the current token if it is of the given type.
+macro_rules! parse_token {
     ($self:ident, $t:path) => {
         match &$self.current().inner {
             $t => {
@@ -57,7 +58,10 @@ macro_rules! expect_advance {
     };
 }
 
-macro_rules! delimited {
+/// Parses a list of items delimited by a given delimiter and closed by a given
+/// closing token. No trailing delimiter is allowed. The closing token will be
+/// consumed.
+macro_rules! parse_delimited {
     ($self:ident, $delimiter:path, $close:path, $($matcher:pat $(if $pred:expr)* => $result:expr),*) => {{
         let mut empty = true;
         loop {
@@ -142,7 +146,7 @@ impl Parser {
             Token::OpenBracket => {
                 self.advance();
                 let expr = self.parse_expr()?;
-                expect_advance!(self, Token::CloseBracket);
+                parse_token!(self, Token::CloseBracket);
                 Ok(Location::ArrayAccess {
                     ident: Box::new(Location::Ident(ident)),
                     index: Box::new(expr),
@@ -156,8 +160,8 @@ impl Parser {
         let name = self.parse_ident()?;
         let _scope = ParseScope::new(self, ParserContext::MethodCall(name.clone()));
         let mut args = Vec::new();
-        expect_advance!(self, Token::OpenParen);
-        delimited! {
+        parse_token!(self, Token::OpenParen);
+        parse_delimited! {
             self, Token::Comma, Token::CloseParen,
             Token::StringLiteral(value) => {
                 args.push(MethodCallArg::StringLiteral(Spanned {
@@ -290,15 +294,15 @@ impl Parser {
             }
             Token::Len => {
                 self.advance();
-                expect_advance!(self, Token::OpenParen);
+                parse_token!(self, Token::OpenParen);
                 let ident = self.parse_ident()?;
-                expect_advance!(self, Token::CloseParen);
+                parse_token!(self, Token::CloseParen);
                 Ok(Expr::Len(ident))
             }
             Token::OpenParen => {
                 self.advance();
                 let expr = self.parse_expr()?;
-                expect_advance!(self, Token::CloseParen);
+                parse_token!(self, Token::CloseParen);
                 Ok(expr)
             }
             Token::Sub | Token::Not => {
@@ -379,7 +383,7 @@ impl Parser {
         match &self.current().inner {
             Token::Identifier(_) => {
                 let ret = self.parse_for_update()?;
-                expect_advance!(self, Token::Semicolon);
+                parse_token!(self, Token::Semicolon);
                 Ok(ret)
             }
             Token::If => self.parse_if_stmt(),
@@ -388,12 +392,12 @@ impl Parser {
             Token::For => self.parse_for_stmt(),
             Token::Break => {
                 self.advance();
-                expect_advance!(self, Token::Semicolon);
+                parse_token!(self, Token::Semicolon);
                 Ok(Stmt::Break)
             }
             Token::Continue => {
                 self.advance();
-                expect_advance!(self, Token::Semicolon);
+                parse_token!(self, Token::Semicolon);
                 Ok(Stmt::Continue)
             }
             _ => unexpected!(
@@ -418,10 +422,10 @@ impl Parser {
     }
 
     pub fn parse_if_stmt(&mut self) -> Result<Stmt, ParserError> {
-        expect_advance!(self, Token::If);
-        expect_advance!(self, Token::OpenParen);
+        parse_token!(self, Token::If);
+        parse_token!(self, Token::OpenParen);
         let condition = self.parse_expr()?;
-        expect_advance!(self, Token::CloseParen);
+        parse_token!(self, Token::CloseParen);
         let then_block = self.parse_block()?;
         let else_block = match &self.current().inner {
             Token::Else => {
@@ -438,25 +442,25 @@ impl Parser {
     }
 
     pub fn parse_while_stmt(&mut self) -> Result<Stmt, ParserError> {
-        expect_advance!(self, Token::While);
-        expect_advance!(self, Token::OpenParen);
+        parse_token!(self, Token::While);
+        parse_token!(self, Token::OpenParen);
         let condition = self.parse_expr()?;
-        expect_advance!(self, Token::CloseParen);
+        parse_token!(self, Token::CloseParen);
         let block = self.parse_block()?;
         Ok(Stmt::While { condition, block })
     }
 
     pub fn parse_for_stmt(&mut self) -> Result<Stmt, ParserError> {
-        expect_advance!(self, Token::For);
-        expect_advance!(self, Token::OpenParen);
+        parse_token!(self, Token::For);
+        parse_token!(self, Token::OpenParen);
         let loop_var_name = self.parse_ident()?;
-        expect_advance!(self, Token::Assign);
+        parse_token!(self, Token::Assign);
         let init = self.parse_expr()?;
-        expect_advance!(self, Token::Semicolon);
+        parse_token!(self, Token::Semicolon);
         let cond = self.parse_expr()?;
-        expect_advance!(self, Token::Semicolon);
+        parse_token!(self, Token::Semicolon);
         let update = self.parse_for_update()?;
-        expect_advance!(self, Token::CloseParen);
+        parse_token!(self, Token::CloseParen);
         let block = self.parse_block()?;
         Ok(Stmt::For {
             loop_var_name,
@@ -468,17 +472,17 @@ impl Parser {
     }
 
     pub fn parse_return_stmt(&mut self) -> Result<Stmt, ParserError> {
-        expect_advance!(self, Token::Return);
+        parse_token!(self, Token::Return);
         let expr = match &self.current().inner {
             Token::Semicolon => None,
             _ => Some(self.parse_expr()?),
         };
-        expect_advance!(self, Token::Semicolon);
+        parse_token!(self, Token::Semicolon);
         Ok(Stmt::Return(expr))
     }
 
     pub fn parse_block(&mut self) -> Result<Block, ParserError> {
-        expect_advance!(self, Token::OpenBrace);
+        parse_token!(self, Token::OpenBrace);
         let mut field_decls = Vec::new();
         let mut stmts = Vec::new();
 
@@ -544,7 +548,7 @@ impl Parser {
                         Token::CloseBracket
                     ),
                 };
-                expect_advance!(self, Token::CloseBracket);
+                parse_token!(self, Token::CloseBracket);
                 Ok(FieldDeclarator::Array {
                     base: Box::new(declarator),
                     size,
@@ -560,7 +564,7 @@ impl Parser {
                 let token = self.current().clone();
                 self.advance();
                 let mut initializers = Vec::new();
-                delimited! {
+                parse_delimited! {
                     self, Token::Comma, Token::CloseBrace,
                     // TODO: support nested initializers
                     _ => initializers.push(Initializer::Literal(self.parse_literal()?))
@@ -584,7 +588,7 @@ impl Parser {
         };
         let r#type = self.parse_type()?;
         let mut decls = vec![];
-        delimited! {
+        parse_delimited! {
             self, Token::Comma, Token::Semicolon,
             _ => {
                 let declarator = self.parse_field_declarator()?;
@@ -625,9 +629,9 @@ impl Parser {
         };
         let name = self.parse_ident()?;
         let _scope = ParseScope::new(self, ParserContext::MethodDecl(name.clone()));
-        expect_advance!(self, Token::OpenParen);
+        parse_token!(self, Token::OpenParen);
         let mut params = vec![];
-        delimited! {
+        parse_delimited! {
             self, Token::Comma, Token::CloseParen,
             _ => {
                 let r#type = self.parse_type()?;
@@ -647,9 +651,9 @@ impl Parser {
     // Parsing import decl
 
     pub fn parse_import_decl(&mut self) -> Result<ImportDecl, ParserError> {
-        expect_advance!(self, Token::Import);
+        parse_token!(self, Token::Import);
         let ident = self.parse_ident()?;
-        expect_advance!(self, Token::Semicolon);
+        parse_token!(self, Token::Semicolon);
         Ok(ImportDecl(ident))
     }
 
