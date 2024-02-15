@@ -3,89 +3,12 @@
 use std::rc::Rc;
 
 use num_bigint::BigInt;
-use std::fmt;
-use thiserror::Error;
 
 use super::{
+    error::{ScannerError, ScannerErrorContext, ScannerExpecting},
     location::{Location, Source, Span, Spanned},
     token::Token,
 };
-
-#[derive(Debug, Clone, Error)]
-pub struct ScannerError {
-    location: Location,
-    context: ScannerErrorContext,
-    expecting: ScannerExpecting,
-    found: Option<char>,
-}
-
-impl fmt::Display for ScannerError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let found = match self.found {
-            Some(c) => format!("{:?}", c),
-            None => "end of file".to_string(),
-        };
-        write!(
-            f,
-            "{}: expecting {}, found {} ({})",
-            self.location, self.expecting, found, self.context
-        )
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum ScannerExpecting {
-    Char(char),
-    OneOf(&'static str),
-    PrintableOrExcape,
-    EscapeSequence,
-}
-
-impl fmt::Display for ScannerExpecting {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ScannerExpecting::Char(c) => write!(f, "{:?}", c),
-            ScannerExpecting::OneOf(s) => write!(f, "one of \"{}\"", s),
-            ScannerExpecting::PrintableOrExcape => write!(f, "printable character or '\\'"),
-            ScannerExpecting::EscapeSequence => {
-                write!(f, "escape sequence (one of n, t, \\, \", \')")
-            }
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ScannerErrorContext {
-    CharLiteral,
-    StringLiteral,
-    CharClosingQuote,
-    StringClosingQuote,
-    EscapeSequence,
-    OperatorToken,
-    SingleCharToken,
-    ClosingBlockComment,
-}
-
-impl fmt::Display for ScannerErrorContext {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ScannerErrorContext::CharLiteral => write!(f, "invalid character in char literal"),
-            ScannerErrorContext::StringLiteral => write!(f, "invalid charcter in string literal"),
-            ScannerErrorContext::CharClosingQuote => {
-                write!(f, "expecting closing quote of char literal")
-            }
-            ScannerErrorContext::StringClosingQuote => {
-                write!(f, "expecting closing quote of string literal")
-            }
-            ScannerErrorContext::EscapeSequence => write!(f, "malformed escape sequence"),
-            ScannerErrorContext::OperatorToken => write!(f, "invalid start of operator token"),
-            ScannerErrorContext::SingleCharToken => write!(f, "invalid single character token"),
-            ScannerErrorContext::ClosingBlockComment => {
-                write!(f, "expecting closing */ of block comment")
-            }
-        }
-    }
-}
 
 pub struct Scanner {
     cur_char: Option<char>,
@@ -113,14 +36,14 @@ impl Scanner {
 
     fn advance(&mut self) {
         if self.cur_char.is_some() {
-            self.cur_char = self.all_chars.get(self.cur_loc.offset + 1).cloned();
-            self.cur_loc.offset += 1;
             if let Some('\n') = self.cur_char {
                 self.cur_loc.line += 1;
                 self.cur_loc.column = 1;
             } else {
                 self.cur_loc.column += 1;
             }
+            self.cur_char = self.all_chars.get(self.cur_loc.offset + 1).cloned();
+            self.cur_loc.offset += 1;
         }
     }
 
@@ -263,7 +186,7 @@ impl Scanner {
                 None => {
                     return Err(ScannerError {
                         location: self.cur_loc.clone(),
-                        context: ScannerErrorContext::StringLiteral,
+                        context: ScannerErrorContext::StringClosingQuote,
                         expecting: ScannerExpecting::Char('"'),
                         found: None,
                     })

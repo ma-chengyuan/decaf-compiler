@@ -2,7 +2,7 @@ use std::fmt;
 use std::rc::Rc;
 
 /// Represents a source file and its content.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Source {
     pub filename: String,
     pub content: String,

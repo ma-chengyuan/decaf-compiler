@@ -7,11 +7,8 @@ mod parse;
 mod scan;
 
 use parse::parser::Parser;
-use scan::{
-    location::Spanned,
-    scanner::{Scanner, ScannerError},
-    token::Token,
-};
+use scan::{error::ScannerError, location::Spanned, scanner::Scanner, token::Token};
+use utils::diagnostics::Diagnostic;
 
 use crate::scan::location::Source;
 
@@ -81,7 +78,8 @@ fn main_scan(args: utils::cli::Args, mut writer: Box<dyn std::io::Write>) {
             }
             Err(e) => {
                 has_error = true;
-                eprintln!("{}", e);
+                let diag = Diagnostic::from(&e);
+                diag.write(&mut std::io::stderr()).unwrap();
             }
         }
     }
@@ -102,7 +100,8 @@ fn main_parse(args: utils::cli::Args, _writer: Box<dyn std::io::Write>) {
     let (_, errors) = parser.parse_program();
     if !errors.is_empty() {
         for e in errors {
-            eprintln!("{}", e);
+            let diag = Diagnostic::from(&e);
+            diag.write(&mut std::io::stderr()).unwrap();
         }
         std::process::exit(1);
     }

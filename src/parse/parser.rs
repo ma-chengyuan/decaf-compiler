@@ -2,12 +2,15 @@
 
 use std::{cell::RefCell, rc::Rc};
 
+use colored::Color;
+
 use crate::{
     parse::ast::{BinOp, MethodCallArg, MethodParam},
     scan::{
         location::{Span, Spanned},
         token::Token,
     },
+    utils::diagnostics::DiagnosticItem,
 };
 
 use super::{
@@ -24,6 +27,29 @@ pub enum ParserContext {
     MethodDecl(Ident),
     FieldDecl(Ident),
     MethodCall(Ident),
+}
+
+impl From<&ParserContext> for DiagnosticItem {
+    fn from(value: &ParserContext) -> Self {
+        let color = Some(Color::Green);
+        match value {
+            ParserContext::MethodDecl(ident) => DiagnosticItem {
+                span: ident.span.clone(),
+                message: format!("in method '{}'", ident.inner),
+                color,
+            },
+            ParserContext::FieldDecl(ident) => DiagnosticItem {
+                span: ident.span.clone(),
+                message: format!("in field '{}'", ident.inner),
+                color,
+            },
+            ParserContext::MethodCall(ident) => DiagnosticItem {
+                span: ident.span.clone(),
+                message: format!("in call to '{}'", ident.inner),
+                color,
+            },
+        }
+    }
 }
 
 pub struct Parser {
