@@ -114,19 +114,19 @@ impl Parser {
         }
     }
 
-    pub fn advance(&mut self) {
+    fn advance(&mut self) {
         self.pos = (self.pos + 1).min(self.tokens.len() - 1);
     }
 
-    pub fn lookahead(&self, by: usize) -> &Spanned<Token> {
+    fn lookahead(&self, by: usize) -> &Spanned<Token> {
         &self.tokens[(self.pos + by).min(self.tokens.len() - 1)]
     }
 
-    pub fn current(&self) -> &Spanned<Token> {
+    fn current(&self) -> &Spanned<Token> {
         self.lookahead(0)
     }
 
-    pub fn parse_ident(&mut self) -> Result<Ident, ParserError> {
+    fn parse_ident(&mut self) -> Result<Ident, ParserError> {
         match &self.current().inner {
             Token::Identifier(ident) => {
                 let ident = Ident {
@@ -140,7 +140,7 @@ impl Parser {
         }
     }
 
-    pub fn parse_location(&mut self) -> Result<Location, ParserError> {
+    fn parse_location(&mut self) -> Result<Location, ParserError> {
         let ident = self.parse_ident()?;
         match &self.current().inner {
             Token::OpenBracket => {
@@ -156,7 +156,7 @@ impl Parser {
         }
     }
 
-    pub fn parse_call(&mut self) -> Result<MethodCall, ParserError> {
+    fn parse_call(&mut self) -> Result<MethodCall, ParserError> {
         let name = self.parse_ident()?;
         let _scope = ParseScope::new(self, ParserContext::MethodCall(name.clone()));
         let mut args = Vec::new();
@@ -175,7 +175,7 @@ impl Parser {
         Ok(MethodCall { name, args })
     }
 
-    pub fn parse_literal(&mut self) -> Result<RuntimeLiteral, ParserError> {
+    fn parse_literal(&mut self) -> Result<RuntimeLiteral, ParserError> {
         match &self.current().inner {
             Token::IntLiteral(value) => {
                 let lit = IntLiteral {
@@ -224,12 +224,12 @@ impl Parser {
         }
     }
 
-    pub fn parse_expr(&mut self) -> Result<Expr, ParserError> {
+    fn parse_expr(&mut self) -> Result<Expr, ParserError> {
         let lhs = self.parse_expr_atom()?;
         self.parse_expr_op_prec(lhs, 0)
     }
 
-    pub fn parse_expr_op_prec(
+    fn parse_expr_op_prec(
         &mut self,
         mut lhs: Expr,
         min_precedence: i32,
@@ -280,7 +280,7 @@ impl Parser {
         }
     }
 
-    pub fn parse_expr_atom(&mut self) -> Result<Expr, ParserError> {
+    fn parse_expr_atom(&mut self) -> Result<Expr, ParserError> {
         match self.current().inner {
             Token::Identifier(_) => {
                 if matches!(self.lookahead(1).inner, Token::OpenParen) {
@@ -331,7 +331,7 @@ impl Parser {
         }
     }
 
-    pub fn parse_update_stmt(&mut self) -> Result<Stmt, ParserError> {
+    fn parse_update_stmt(&mut self) -> Result<Stmt, ParserError> {
         let location = self.parse_location()?;
         match self.current().inner {
             Token::Increment | Token::Decrement => {
@@ -379,7 +379,7 @@ impl Parser {
 
     // Parsing statements
 
-    pub fn parse_stmt(&mut self) -> Result<Stmt, ParserError> {
+    fn parse_stmt(&mut self) -> Result<Stmt, ParserError> {
         match &self.current().inner {
             Token::Identifier(_) => {
                 let ret = self.parse_for_update()?;
@@ -413,7 +413,7 @@ impl Parser {
         }
     }
 
-    pub fn parse_for_update(&mut self) -> Result<Stmt, ParserError> {
+    fn parse_for_update(&mut self) -> Result<Stmt, ParserError> {
         if self.lookahead(1).inner == Token::OpenParen {
             Ok(Stmt::Call(self.parse_call()?))
         } else {
@@ -421,7 +421,7 @@ impl Parser {
         }
     }
 
-    pub fn parse_if_stmt(&mut self) -> Result<Stmt, ParserError> {
+    fn parse_if_stmt(&mut self) -> Result<Stmt, ParserError> {
         parse_token!(self, Token::If);
         parse_token!(self, Token::OpenParen);
         let condition = self.parse_expr()?;
@@ -441,7 +441,7 @@ impl Parser {
         })
     }
 
-    pub fn parse_while_stmt(&mut self) -> Result<Stmt, ParserError> {
+    fn parse_while_stmt(&mut self) -> Result<Stmt, ParserError> {
         parse_token!(self, Token::While);
         parse_token!(self, Token::OpenParen);
         let condition = self.parse_expr()?;
@@ -450,7 +450,7 @@ impl Parser {
         Ok(Stmt::While { condition, block })
     }
 
-    pub fn parse_for_stmt(&mut self) -> Result<Stmt, ParserError> {
+    fn parse_for_stmt(&mut self) -> Result<Stmt, ParserError> {
         parse_token!(self, Token::For);
         parse_token!(self, Token::OpenParen);
         let loop_var_name = self.parse_ident()?;
@@ -471,7 +471,7 @@ impl Parser {
         })
     }
 
-    pub fn parse_return_stmt(&mut self) -> Result<Stmt, ParserError> {
+    fn parse_return_stmt(&mut self) -> Result<Stmt, ParserError> {
         parse_token!(self, Token::Return);
         let expr = match &self.current().inner {
             Token::Semicolon => None,
@@ -481,7 +481,7 @@ impl Parser {
         Ok(Stmt::Return(expr))
     }
 
-    pub fn parse_block(&mut self) -> Result<Block, ParserError> {
+    fn parse_block(&mut self) -> Result<Block, ParserError> {
         parse_token!(self, Token::OpenBrace);
         let mut field_decls = Vec::new();
         let mut stmts = Vec::new();
@@ -510,7 +510,7 @@ impl Parser {
 
     // Parsing field and method declaration
 
-    pub fn parse_type(&mut self) -> Result<Type, ParserError> {
+    fn parse_type(&mut self) -> Result<Type, ParserError> {
         match &self.current().inner {
             Token::Int => {
                 self.advance();
@@ -524,7 +524,7 @@ impl Parser {
         }
     }
 
-    pub fn parse_field_declarator(&mut self) -> Result<FieldDeclarator, ParserError> {
+    fn parse_field_declarator(&mut self) -> Result<FieldDeclarator, ParserError> {
         let declarator = FieldDeclarator::Ident(self.parse_ident()?);
         match self.current().inner {
             Token::OpenBracket => {
@@ -558,7 +558,7 @@ impl Parser {
         }
     }
 
-    pub fn parse_initializer(&mut self) -> Result<Initializer, ParserError> {
+    fn parse_initializer(&mut self) -> Result<Initializer, ParserError> {
         match &self.current().inner {
             Token::OpenBrace => {
                 let token = self.current().clone();
@@ -578,7 +578,7 @@ impl Parser {
         }
     }
 
-    pub fn parse_field_decl(&mut self) -> Result<FieldDecl, ParserError> {
+    fn parse_field_decl(&mut self) -> Result<FieldDecl, ParserError> {
         let is_const = match self.current().inner {
             Token::Const => {
                 self.advance();
@@ -619,7 +619,7 @@ impl Parser {
 
     // Parsing method declaration
 
-    pub fn parse_method_decl(&mut self) -> Result<MethodDecl, ParserError> {
+    fn parse_method_decl(&mut self) -> Result<MethodDecl, ParserError> {
         let return_type = match &self.current().inner {
             Token::Void => {
                 self.advance();
@@ -650,7 +650,7 @@ impl Parser {
 
     // Parsing import decl
 
-    pub fn parse_import_decl(&mut self) -> Result<ImportDecl, ParserError> {
+    fn parse_import_decl(&mut self) -> Result<ImportDecl, ParserError> {
         parse_token!(self, Token::Import);
         let ident = self.parse_ident()?;
         parse_token!(self, Token::Semicolon);
@@ -726,7 +726,7 @@ impl Parser {
 
     // Error recovery
 
-    pub fn panic_recovery(&mut self, err: ParserError) {
+    fn panic_recovery(&mut self, err: ParserError) {
         self.advance();
         loop {
             match &self.current().inner {
