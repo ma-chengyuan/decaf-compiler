@@ -45,6 +45,24 @@ impl fmt::Display for Span {
     }
 }
 
+impl Span {
+    pub fn merge(&self, other: &Span) -> Span {
+        assert_eq!(self.start.source, other.start.source);
+        assert_eq!(self.end.source, other.end.source);
+        let start = if self.start.offset < other.start.offset {
+            self.start.clone()
+        } else {
+            other.start.clone()
+        };
+        let end = if self.end.offset > other.end.offset {
+            self.end.clone()
+        } else {
+            other.end.clone()
+        };
+        Span { start, end }
+    }
+}
+
 /// A spanned value, directly convertible from a parsed token.
 #[derive(Clone)]
 pub struct Spanned<T> {

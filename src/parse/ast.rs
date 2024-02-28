@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 use num_bigint::BigInt;
 
-use crate::scan::location::Spanned;
+use crate::scan::location::{Span, Spanned};
 
 pub type Ident = Spanned<String>;
 pub type IntLiteral = Spanned<BigInt>;
@@ -25,14 +25,14 @@ pub enum Location {
     ArrayAccess {
         // Decaf supports 1D array for now, but use Box<Location> for future support.
         ident: Box<Location>,
-        index: Box<Expr>,
+        index: Box<Spanned<Expr>>,
     },
 }
 
 /// Argument to a method call. String literal is only supported for external calls.
 #[derive(Debug, Clone)]
 pub enum MethodCallArg {
-    Expr(Expr),
+    Expr(Spanned<Expr>),
     StringLiteral(StringLiteral),
 }
 
@@ -51,13 +51,13 @@ pub enum Expr {
     Literal(RuntimeLiteral),
     Len(Ident),
     BinOp {
-        lhs: Box<Expr>,
+        lhs: Box<Spanned<Expr>>,
         op: BinOp,
-        rhs: Box<Expr>,
+        rhs: Box<Spanned<Expr>>,
     },
     UnaryOp {
         op: UnaryOp,
-        expr: Box<Expr>,
+        expr: Box<Spanned<Expr>>,
     },
 }
 
@@ -148,24 +148,27 @@ pub enum Stmt {
     },
     Call(MethodCall),
     If {
-        condition: Expr,
+        condition: Spanned<Expr>,
         then_block: Block,
         else_block: Option<Block>,
     },
     For {
         loop_var_name: Ident,
-        init: Expr,
-        cond: Expr,
+        init: Spanned<Expr>,
+        cond: Spanned<Expr>,
         update: Box<Stmt>, // Constrained to location assign and method call by the parser, for now.
         block: Block,
     },
     While {
-        condition: Expr,
+        condition: Spanned<Expr>,
         block: Block,
     },
-    Return(Option<Expr>),
-    Break,
-    Continue,
+    Return {
+        span: Span,
+        expr: Option<Spanned<Expr>>,
+    },
+    Break(Span),
+    Continue(Span),
 }
 
 /// Corresponds to `block` in the spec.
@@ -180,12 +183,12 @@ pub struct Block {
 pub enum UpdateOp {
     Increment,
     Decrement,
-    Assign(Expr),
-    AddAssign(Expr),
-    SubAssign(Expr),
-    MulAssign(Expr),
-    DivAssign(Expr),
-    ModAssign(Expr),
+    Assign(Spanned<Expr>),
+    AddAssign(Spanned<Expr>),
+    SubAssign(Spanned<Expr>),
+    MulAssign(Spanned<Expr>),
+    DivAssign(Spanned<Expr>),
+    ModAssign(Spanned<Expr>),
 }
 
 /// Corresponds to `import_decl` in the spec.

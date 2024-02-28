@@ -108,6 +108,20 @@ macro_rules! parse_delimited {
     }};
 }
 
+macro_rules! parse_spanned {
+    ($self:ident . $method:ident ( $($args:tt)* )) => {
+        {
+            let start = $self.current().span.start.clone();
+            let inner = $self.$method($($args)*)?;
+            let end = $self.tokens[$self.pos - 1].span.end.clone();
+            Spanned {
+                inner,
+                span: Span { start, end },
+            }
+        }
+    };
+}
+
 impl Parser {
     pub fn new(mut tokens: Vec<Spanned<Token>>) -> Self {
         // Add an EOF token to the end of the token stream for easier parsing.
@@ -250,16 +264,16 @@ impl Parser {
         }
     }
 
-    fn parse_expr(&mut self) -> Result<Expr, ParserError> {
-        let lhs = self.parse_expr_atom()?;
+    fn parse_expr(&mut self) -> Result<Spanned<Expr>, ParserError> {
+        let lhs = parse_spanned!(self.parse_expr_atom());
         self.parse_expr_op_prec(lhs, 0)
     }
 
     fn parse_expr_op_prec(
         &mut self,
-        mut lhs: Expr,
+        mut lhs: Spanned<Expr>,
         min_precedence: i32,
-    ) -> Result<Expr, ParserError> {
+    ) -> Result<Spanned<Expr>, ParserError> {
         // Our beloved operator-precedence parsing algorithm.
         // See https://en.wikipedia.org/wiki/Operator-precedence_parser
         loop {
@@ -268,7 +282,7 @@ impl Parser {
                 break;
             }
             self.advance();
-            let mut rhs = self.parse_expr_atom()?;
+            let mut rhs = parse_spanned!(self.parse_expr_atom());
             loop {
                 let (_, new_prec) = token_to_op_and_prec(&self.current().inner);
                 if new_prec <= cur_prec {
@@ -277,10 +291,14 @@ impl Parser {
                     rhs = self.parse_expr_op_prec(rhs, cur_prec + 1)?;
                 }
             }
-            lhs = Expr::BinOp {
-                lhs: Box::new(lhs),
-                op,
-                rhs: Box::new(rhs),
+            let span = lhs.span.merge(&rhs.span);
+            lhs = Spanned {
+                inner: Expr::BinOp {
+                    lhs: Box::new(lhs),
+                    op,
+                    rhs: Box::new(rhs),
+                },
+                span,
             };
         }
         return Ok(lhs);
@@ -329,7 +347,7 @@ impl Parser {
                 self.advance();
                 let expr = self.parse_expr()?;
                 parse_token!(self, Token::CloseParen);
-                Ok(expr)
+                Ok(expr.inner)
             }
             Token::Sub | Token::Not => {
                 let op = match self.current().inner {
@@ -340,7 +358,7 @@ impl Parser {
                 self.advance();
                 Ok(Expr::UnaryOp {
                     op,
-                    expr: Box::new(self.parse_expr_atom()?),
+                    expr: Box::new(parse_spanned!(self.parse_expr_atom())),
                 })
             }
             _ => unexpected!(
@@ -417,14 +435,16 @@ impl Parser {
             Token::Return => self.parse_return_stmt(),
             Token::For => self.parse_for_stmt(),
             Token::Break => {
+                let span = self.current().span.clone();
                 self.advance();
                 parse_token!(self, Token::Semicolon);
-                Ok(Stmt::Break)
+                Ok(Stmt::Break(span))
             }
             Token::Continue => {
+                let span = self.current().span.clone();
                 self.advance();
                 parse_token!(self, Token::Semicolon);
-                Ok(Stmt::Continue)
+                Ok(Stmt::Continue(span))
             }
             _ => unexpected!(
                 self,
@@ -498,13 +518,14 @@ impl Parser {
     }
 
     fn parse_return_stmt(&mut self) -> Result<Stmt, ParserError> {
+        let span = self.current().span.clone();
         parse_token!(self, Token::Return);
         let expr = match &self.current().inner {
             Token::Semicolon => None,
             _ => Some(self.parse_expr()?),
         };
         parse_token!(self, Token::Semicolon);
-        Ok(Stmt::Return(expr))
+        Ok(Stmt::Return { span, expr })
     }
 
     fn parse_block(&mut self) -> Result<Block, ParserError> {
