@@ -81,10 +81,7 @@ impl Scanner {
         };
         Ok(Spanned {
             inner: token,
-            span: Span {
-                start,
-                end: self.cur_loc.clone(),
-            },
+            span: Span::new(start, self.cur_loc.clone()),
         })
     }
 
@@ -111,10 +108,7 @@ impl Scanner {
         }
         Ok(Spanned {
             inner: Token::IntLiteral(BigInt::parse_bytes(value.as_bytes(), base).unwrap()),
-            span: Span {
-                start,
-                end: self.cur_loc.clone(),
-            },
+            span: Span::new(start, self.cur_loc.clone()),
         })
     }
 
@@ -162,10 +156,7 @@ impl Scanner {
                 self.advance();
                 Ok(Spanned {
                     inner: Token::CharLiteral(c),
-                    span: Span {
-                        start,
-                        end: self.cur_loc.clone(),
-                    },
+                    span: Span::new(start, self.cur_loc.clone()),
                 })
             }
             found => Err(ScannerError {
@@ -200,10 +191,7 @@ impl Scanner {
         }
         Ok(Spanned {
             inner: Token::StringLiteral(value),
-            span: Span {
-                start,
-                end: self.cur_loc.clone(),
-            },
+            span: Span::new(start, self.cur_loc.clone()),
         })
     }
 
@@ -230,10 +218,7 @@ impl Scanner {
         self.advance();
         Ok(Spanned {
             inner: token,
-            span: Span {
-                start,
-                end: self.cur_loc.clone(),
-            },
+            span: Span::new(start, self.cur_loc.clone()),
         })
     }
 
@@ -280,18 +265,12 @@ impl Scanner {
                 self.advance();
                 Ok(Spanned {
                     inner: Token::DivAssign,
-                    span: Span {
-                        start,
-                        end: self.cur_loc.clone(),
-                    },
+                    span: Span::new(start, self.cur_loc.clone()),
                 })
             }
             _ => Ok(Spanned {
                 inner: Token::Div,
-                span: Span {
-                    start,
-                    end: self.cur_loc.clone(),
-                },
+                span: Span::new(start, self.cur_loc.clone()),
             }),
         }
     }
@@ -383,10 +362,7 @@ impl Scanner {
         };
         Ok(Spanned {
             inner: token,
-            span: Span {
-                start,
-                end: self.cur_loc.clone(),
-            },
+            span: Span::new(start, self.cur_loc.clone()),
         })
     }
 
@@ -402,10 +378,7 @@ impl Scanner {
         let result = match self.cur_char {
             None => Ok(Spanned {
                 inner: Token::EndOfFile,
-                span: Span {
-                    start: self.cur_loc.clone(),
-                    end: self.cur_loc.clone(),
-                },
+                span: Span::new(self.cur_loc.clone(), self.cur_loc.clone()),
             }),
             Some(c) => match c {
                 c if c.is_whitespace() => self.next_whitespace(),

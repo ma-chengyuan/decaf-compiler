@@ -77,7 +77,7 @@ impl fmt::Display for ParserErrorKind {
                 write!(
                     f,
                     "{}: unexpected token {}, expecting {}",
-                    found.span.start,
+                    found.span.start(),
                     found.inner,
                     format_expecting_tokens(expecting),
                 )
@@ -86,11 +86,11 @@ impl fmt::Display for ParserErrorKind {
                 write!(
                     f,
                     "{}: empty initializer in array declaration",
-                    token.span.start
+                    token.span.start()
                 )
             }
             ParserErrorKind::EmptyFieldDecl(token) => {
-                write!(f, "{}: empty field declaration", token.span.start)
+                write!(f, "{}: empty field declaration", token.span.start())
             }
         }
     }

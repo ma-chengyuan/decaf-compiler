@@ -50,16 +50,16 @@ impl Diagnostic {
     }
 
     pub fn add_item(mut self, item: DiagnosticItem) -> Self {
-        let line = item.span.start.line;
+        let line = item.span.start().line;
         let items = self
             .items
-            .entry(item.span.start.source.clone())
+            .entry(item.span.start().source.clone())
             .or_default()
             .entry(line)
             .or_default();
         items.push(item);
         // Sort items by col in ascending order
-        items.sort_by_key(|item| item.span.start.column);
+        items.sort_by_key(|item| item.span.start().column);
         self
     }
 
@@ -105,7 +105,7 @@ impl Diagnostic {
                 for item in items.iter().rev() {
                     // cumulative_height: the depth of the first line of the message
                     // caret_length: the length of the caret, at least 1
-                    let caret_length = (item.span.end.column - item.span.start.column).max(1);
+                    let caret_length = (item.span.end().column - item.span.start().column).max(1);
                     let color = |s: &str| match item.color {
                         Some(color) => s.color(color),
                         None => s.normal(),
@@ -114,20 +114,20 @@ impl Diagnostic {
                     let (caret, item_col) = match cumulative_depth {
                         0 => (
                             color(&"^".repeat(caret_length)).bold(),
-                            item.span.start.column + caret_length + 1,
+                            item.span.start().column + caret_length + 1,
                         ),
                         _ => {
                             // Draw the vertical line connecting the caret to the message
                             for element in elements.iter_mut().take(cumulative_depth).skip(1) {
-                                element.push((item.span.start.column, color("|").bold()));
+                                element.push((item.span.start().column, color("|").bold()));
                             }
                             (
                                 color(&"-".repeat(caret_length)).bold(),
-                                item.span.start.column,
+                                item.span.start().column,
                             )
                         }
                     };
-                    elements[0].push((item.span.start.column, caret));
+                    elements[0].push((item.span.start().column, caret));
                     for line in item.message.lines() {
                         let line = color(line).bold();
                         elements[cumulative_depth].push((item_col, line));

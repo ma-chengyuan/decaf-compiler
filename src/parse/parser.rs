@@ -111,12 +111,12 @@ macro_rules! parse_delimited {
 macro_rules! parse_spanned {
     ($self:ident . $method:ident ( $($args:tt)* )) => {
         {
-            let start = $self.current().span.start.clone();
+            let start = $self.current().span.start().clone();
             let inner = $self.$method($($args)*)?;
-            let end = $self.tokens[$self.pos - 1].span.end.clone();
+            let end = $self.tokens[$self.pos - 1].span.end().clone();
             Spanned {
                 inner,
-                span: Span { start, end },
+                span: Span::new(start, end),
             }
         }
     };
@@ -132,10 +132,7 @@ impl Parser {
             }) => {}
             Some(tok) => tokens.push(Spanned {
                 inner: Token::EndOfFile,
-                span: Span {
-                    start: tok.span.end.clone(),
-                    end: tok.span.end.clone(),
-                },
+                span: Span::new(tok.span.end().clone(), tok.span.end().clone()),
             }),
             None => panic!("empty token stream"),
         }

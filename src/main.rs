@@ -71,10 +71,10 @@ fn main_scan(args: utils::cli::Args, mut writer: Box<dyn std::io::Write>) {
                     scan::token::Token::BoolLiteral(_) => "BOOLEANLITERAL ",
                     _ => "",
                 };
-                let content = chars[tok.span.start.offset..tok.span.end.offset]
+                let content = chars[tok.span.start().offset..tok.span.end().offset]
                     .iter()
                     .collect::<String>();
-                writeln!(writer, "{} {}{}", tok.span.start.line, prefix, content).unwrap();
+                writeln!(writer, "{} {}{}", tok.span.start().line, prefix, content).unwrap();
             }
             Err(e) => {
                 has_error = true;

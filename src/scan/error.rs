@@ -87,10 +87,7 @@ impl From<&ScannerError> for Diagnostic {
         Diagnostic::new()
             .with_pre_text(&pre_text)
             .add_item(DiagnosticItem {
-                span: Span {
-                    start: value.location.clone(),
-                    end: value.location.clone(),
-                },
+                span: Span::new(value.location.clone(), value.location.clone()),
                 message: format!("expecting {}", value.expecting),
                 color: Some(colored::Color::Red),
             })

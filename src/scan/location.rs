@@ -32,34 +32,50 @@ impl fmt::Display for Location {
 /// Represents a span in a source file.
 /// TODO: enforce that start and end point to the same source.
 #[derive(Debug, Clone)]
-pub struct Span {
+struct SpanInner {
     /// The start location of the span.
-    pub start: Location,
+    start: Location,
     /// The end location of the span (exclusive).
-    pub end: Location,
+    end: Location,
 }
+
+#[derive(Debug, Clone)]
+pub struct Span(Rc<SpanInner>);
 
 impl fmt::Display for Span {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}-{}", self.start, self.end)
+        write!(f, "{}-{}", self.start(), self.end())
     }
 }
 
 impl Span {
+    pub fn new(start: Location, end: Location) -> Self {
+        assert_eq!(start.source, end.source);
+        Self(Rc::new(SpanInner { start, end }))
+    }
+
+    pub fn start(&self) -> &Location {
+        &self.0.start
+    }
+
+    pub fn end(&self) -> &Location {
+        &self.0.end
+    }
+
     pub fn merge(&self, other: &Span) -> Span {
-        assert_eq!(self.start.source, other.start.source);
-        assert_eq!(self.end.source, other.end.source);
-        let start = if self.start.offset < other.start.offset {
-            self.start.clone()
+        assert_eq!(self.start().source, other.start().source);
+        assert_eq!(self.end().source, other.end().source);
+        let start = if self.start().offset < other.start().offset {
+            self.start().clone()
         } else {
-            other.start.clone()
+            other.start().clone()
         };
-        let end = if self.end.offset > other.end.offset {
-            self.end.clone()
+        let end = if self.end().offset > other.end().offset {
+            self.end().clone()
         } else {
-            other.end.clone()
+            other.end().clone()
         };
-        Span { start, end }
+        Self::new(start, end)
     }
 }
 
