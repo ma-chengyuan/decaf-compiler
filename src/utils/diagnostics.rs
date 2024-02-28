@@ -49,17 +49,23 @@ impl Diagnostic {
         self
     }
 
-    pub fn add_item(mut self, item: DiagnosticItem) -> Self {
-        let line = item.span.start().line;
-        let items = self
-            .items
-            .entry(item.span.start().source.clone())
-            .or_default()
-            .entry(line)
-            .or_default();
-        items.push(item);
-        // Sort items by col in ascending order
-        items.sort_by_key(|item| item.span.start().column);
+    pub fn add_item(mut self, mut item: DiagnosticItem) -> Self {
+        for span in item.span.per_line().into_iter().rev() {
+            let line = span.start().line;
+            let items = self
+                .items
+                .entry(span.start().source.clone())
+                .or_default()
+                .entry(line)
+                .or_default();
+            items.push(DiagnosticItem {
+                message: std::mem::take(&mut item.message),
+                color: item.color,
+                span,
+            });
+            // Sort items by col in ascending order
+            items.sort_by_key(|item| item.span.start().column);
+        }
         self
     }
 
@@ -76,12 +82,14 @@ impl Diagnostic {
             let lines = source.content.lines().collect::<Vec<_>>();
             let mut last_line = 0;
             for (line, items) in line_items {
+                // Print out a transition from the last line
                 if line - last_line == 1 {
                     writeln!(writer, "{} {}", spacing, vertical_bar)?
                 } else {
                     writeln!(writer, "{}{}", spacing, ellipsis)?
                 }
                 last_line = *line;
+                // Print out the source line with the line number
                 let line_number = format!("{:width$}", line, width = DIAGONSTIC_LINE_NUMBER_WIDTH)
                     .cyan()
                     .bold();
@@ -95,8 +103,8 @@ impl Diagnostic {
                 let total_depth = items
                     .iter()
                     .map(|item| item.message.lines().count() + 1)
-                    .sum::<usize>()
-                    - 1;
+                    .sum::<usize>();
+                let total_depth = (total_depth - 1).max(1);
                 let mut elements: Vec<Vec<(/*column offset*/ usize, ColoredString)>> =
                     vec![vec![]; total_depth];
 
@@ -157,5 +165,79 @@ impl Diagnostic {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::rc::Rc;
+
+    use colored::{Color, Colorize};
+
+    use crate::scan::location::{Location, Source, Span};
+
+    use super::DiagnosticItem;
+
+    #[test]
+    fn test_visual_inspection() {
+        // Run with cargo test -- --nocapture
+        let source = Rc::new(Source {
+            filename: "test".into(),
+            content: r#"
+fn main() {
+    println!("Hello, world!");
+} /* 
+    Very long comments
+*/
+            "#
+            .trim_start()
+            .into(),
+        });
+        macro_rules! test_span {
+            ($o1:literal : $l1:literal : $c1:literal - $o2:literal : $l2:literal : $c2:literal) => {
+                Span::new(
+                    Location {
+                        source: source.clone(),
+                        offset: $o1,
+                        line: $l1,
+                        column: $c1,
+                    },
+                    Location {
+                        source: source.clone(),
+                        offset: $o2,
+                        line: $l2,
+                        column: $c2,
+                    },
+                )
+            };
+        }
+        let item_1 = DiagnosticItem {
+            span: test_span!(0:1:1 - 2:1:3),
+            message: "test".into(),
+            color: None,
+        };
+        let item_2 = DiagnosticItem {
+            span: test_span!(3:1:4 - 44:3:2),
+            message: "multi line test\nmulti line test".into(),
+            color: Some(Color::Red),
+        };
+        let item_3 = DiagnosticItem {
+            span: test_span!(45:3:3 - 74:5:3),
+            message: "test again".into(),
+            color: Some(Color::Green),
+        };
+        let item_4 = DiagnosticItem {
+            span: test_span!(44:3:2 - 45:3:3),
+            message: "sandwiched :(".into(),
+            color: Some(Color::Blue),
+        };
+        let diag = super::Diagnostic::new()
+            .with_pre_text(&"some pre text".green().bold().to_string())
+            .add_item(item_1)
+            .add_item(item_2)
+            .add_item(item_3)
+            .add_item(item_4)
+            .with_post_text("some post text");
+        diag.write(&mut std::io::stderr()).unwrap();
     }
 }

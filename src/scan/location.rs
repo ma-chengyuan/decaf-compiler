@@ -77,6 +77,40 @@ impl Span {
         };
         Self::new(start, end)
     }
+
+    /// Break a span that could span multiple lines into multiple spans that
+    /// each span only one line.
+    /// This is useful for diagnostics, but slow!
+    pub fn per_line(&self) -> Vec<Self> {
+        if self.start().line == self.end().line {
+            return vec![self.clone()];
+        }
+        let start_offset = self.start().offset;
+        let end_offset = self.end().offset;
+
+        let mut start = self.start().clone();
+        let mut cur = self.start().clone();
+        let mut ret = vec![];
+        let source_chars = self.start().source.content.chars();
+        for c in source_chars.take(end_offset).skip(start_offset) {
+            // Invariant: cur is the location of c.
+            if c == '\n' {
+                ret.push(Span::new(start, cur.clone()));
+                cur.column = 1;
+                cur.line += 1;
+                cur.offset += 1;
+                start = cur.clone();
+            } else {
+                cur.column += 1;
+                cur.offset += 1;
+            }
+        }
+        debug_assert_eq!(cur.offset, end_offset);
+        if start.offset != cur.offset {
+            ret.push(Span::new(start, cur));
+        }
+        ret
+    }
 }
 
 /// A spanned value, directly convertible from a parsed token.
