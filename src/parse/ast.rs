@@ -18,6 +18,16 @@ pub enum RuntimeLiteral {
     // No string literal for now.
 }
 
+impl RuntimeLiteral {
+    pub fn span(&self) -> &Span {
+        match self {
+            RuntimeLiteral::Int(spanned) => &spanned.span,
+            RuntimeLiteral::Bool(spanned) => &spanned.span,
+            RuntimeLiteral::Char(spanned) => &spanned.span,
+        }
+    }
+}
+
 /// A memory location, or "lvalue" in C/C++ terminology.
 #[derive(Debug, Clone)]
 pub enum Location {
@@ -126,7 +136,16 @@ impl FieldDeclarator {
 #[derive(Debug, Clone)]
 pub enum Initializer {
     Literal(RuntimeLiteral),
-    Array(Vec<Initializer>),
+    Array(Spanned<Vec<Initializer>>),
+}
+
+impl Initializer {
+    pub fn span(&self) -> &Span {
+        match self {
+            Initializer::Literal(lit) => lit.span(),
+            Initializer::Array(spanned) => &spanned.span,
+        }
+    }
 }
 
 /// A declaration of a field includes a declarator and an optional initializer.

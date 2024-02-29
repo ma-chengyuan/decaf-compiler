@@ -602,22 +602,26 @@ impl Parser {
         }
     }
 
+    fn parse_array_initializer(&mut self) -> Result<Vec<Initializer>, ParserError> {
+        let token = self.current().clone();
+        self.advance();
+        let mut initializers = Vec::new();
+        parse_delimited! {
+            self, Token::Comma, Token::CloseBrace,
+            // TODO: support nested initializers
+            _ => initializers.push(Initializer::Literal(self.parse_literal()?))
+        };
+        if initializers.is_empty() {
+            return Err(self.make_error(ParserErrorKind::EmptyInitializer(token)));
+        }
+        Ok(initializers)
+    }
+
     fn parse_initializer(&mut self) -> Result<Initializer, ParserError> {
         match &self.current().inner {
-            Token::OpenBrace => {
-                let token = self.current().clone();
-                self.advance();
-                let mut initializers = Vec::new();
-                parse_delimited! {
-                    self, Token::Comma, Token::CloseBrace,
-                    // TODO: support nested initializers
-                    _ => initializers.push(Initializer::Literal(self.parse_literal()?))
-                };
-                if initializers.is_empty() {
-                    return Err(self.make_error(ParserErrorKind::EmptyInitializer(token)));
-                }
-                Ok(Initializer::Array(initializers))
-            }
+            Token::OpenBrace => Ok(Initializer::Array(parse_spanned!(
+                self.parse_array_initializer()
+            ))),
             _ => Ok(Initializer::Literal(self.parse_literal()?)),
         }
     }
