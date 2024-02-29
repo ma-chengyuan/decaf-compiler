@@ -1,4 +1,3 @@
-import difflib
 import os
 import subprocess
 from pathlib import Path
@@ -29,15 +28,15 @@ def main():
 
     def run(path):
         proc = subprocess.Popen(
-            [str(exec_name), "-t", "parse", str(path)],
+            [str(exec_name), "-t", "inter", str(path)],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
         return proc
 
-    for test_suite in ["public", "private"]:
-        legal_file_dir = Path(f"../{test_suite}-tests/parser/legal")
-        illegal_file_dir = Path(f"../{test_suite}-tests/parser/illegal")
+    for test_suite in ["../public-tests", "./tests"]:
+        legal_file_dir = Path(f"{test_suite}/semantics/legal")
+        illegal_file_dir = Path(f"{test_suite}/semantics/illegal")
 
         for input_file in os.listdir(legal_file_dir):
             total_cases += 1

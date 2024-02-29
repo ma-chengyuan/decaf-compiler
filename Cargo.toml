@@ -12,3 +12,4 @@ thiserror = "1.0"
 num-bigint = "0.4.0"
 # Add color to the error output (purely cosmetic)
 colored = "2.0.0"
+lazy_static = "1.4.0"

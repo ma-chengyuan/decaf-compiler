@@ -1,11 +1,11 @@
 use std::{path::Path, rc::Rc};
 
-mod add;
-mod utils;
-
+mod inter;
 mod parse;
 mod scan;
+mod utils;
 
+use inter::SemanticChecker;
 use parse::parser::Parser;
 use scan::{error::ScannerError, location::Spanned, scanner::Scanner, token::Token};
 use utils::diagnostics::Diagnostic;
@@ -38,9 +38,7 @@ fn main() {
         }
         utils::cli::CompilerAction::Scan => main_scan(args, _writer),
         utils::cli::CompilerAction::Parse => main_parse(args, _writer),
-        utils::cli::CompilerAction::Inter => {
-            todo!("inter");
-        }
+        utils::cli::CompilerAction::Inter => main_inter(args, _writer),
         utils::cli::CompilerAction::Assembly => {
             todo!("assembly");
         }
@@ -90,14 +88,28 @@ fn main_scan(args: utils::cli::Args, mut writer: Box<dyn std::io::Write>) {
 
 fn main_parse(args: utils::cli::Args, _writer: Box<dyn std::io::Write>) {
     let (tokens, errors) = scan(args.input);
-    if !errors.is_empty() {
-        for e in errors {
-            eprintln!("{}", e);
-        }
-        std::process::exit(1);
-    }
+    dump_errors_and_exit(errors);
     let mut parser = Parser::new(tokens);
     let (_, errors) = parser.parse_program();
+    dump_errors_and_exit(errors);
+}
+
+fn main_inter(args: utils::cli::Args, _writer: Box<dyn std::io::Write>) {
+    // TODO: Deduplicate this code with main_parse
+    let (tokens, errors) = scan(args.input);
+    dump_errors_and_exit(errors);
+    let mut parser = Parser::new(tokens);
+    let (ast, errors) = parser.parse_program();
+    dump_errors_and_exit(errors);
+    let mut checker = SemanticChecker::new();
+    let errors = checker.check_program(&ast);
+    dump_errors_and_exit(errors);
+}
+
+fn dump_errors_and_exit<T>(errors: Vec<T>)
+where
+    for<'a> Diagnostic: From<&'a T>,
+{
     if !errors.is_empty() {
         for e in errors {
             let diag = Diagnostic::from(&e);

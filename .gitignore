@@ -16,4 +16,5 @@ Cargo.lock
 # IDEs
 .vscode/
 
-fuzz_out.dcf
+/*.dcf
+__pycache__/
