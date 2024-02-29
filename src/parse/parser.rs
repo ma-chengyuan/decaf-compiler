@@ -634,7 +634,7 @@ impl Parser {
             }
             _ => false,
         };
-        let r#type = self.parse_type()?;
+        let ty = self.parse_type()?;
         let mut decls = vec![];
         parse_delimited! {
             self, Token::Comma, Token::Semicolon,
@@ -660,7 +660,7 @@ impl Parser {
         }
         Ok(FieldDecl {
             is_const,
-            r#type,
+            ty,
             decls,
         })
     }
@@ -682,9 +682,9 @@ impl Parser {
         parse_delimited! {
             self, Token::Comma, Token::CloseParen,
             _ => {
-                let r#type = self.parse_type()?;
+                let ty = self.parse_type()?;
                 let name = self.parse_ident()?;
-                params.push(MethodParam { r#type, name });
+                params.push(MethodParam { ty, name });
             }
         }
         let body = self.parse_block()?;

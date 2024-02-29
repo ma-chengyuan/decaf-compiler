@@ -109,7 +109,7 @@ pub enum Type {
 #[derive(Debug, Clone)]
 pub struct FieldDecl {
     pub is_const: bool,
-    pub r#type: Type,
+    pub ty: Type,
     pub decls: Vec<FieldDeclaration>,
 }
 
@@ -216,7 +216,7 @@ pub struct ImportDecl(pub Ident);
 
 #[derive(Debug, Clone)]
 pub struct MethodParam {
-    pub r#type: Type,
+    pub ty: Type,
     pub name: Ident,
 }
 
