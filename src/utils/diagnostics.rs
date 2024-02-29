@@ -100,15 +100,35 @@ impl Diagnostic {
                     vertical_bar,
                     lines[line - 1]
                 )?;
-                let total_depth = items
-                    .iter()
-                    .map(|item| item.message.lines().count() + 1)
-                    .sum::<usize>();
+                // Calculate how many lines down the source line it will take to layout all the items.
+                // For example, if there are 3 items, 2 of which have non-empty
+                // messages, then the layout will be:
+                // xxx | source line source line source line
+                //     |        ^^^^ ------ ^^^^ ^^^^^^^^^^^ message 0      -> depth 0
+                //     |             |                                      -> depth 1
+                //     |             message 2                              -> depth 2
+                // Items are laid out from right to left.
+                let total_depth = items.iter().rev().fold(0, |acc, item| {
+                    if item.message.is_empty() {
+                        // Empty messages are just a caret, they don't take up
+                        // vertical space at all. But non-empty messages to the
+                        // left will need to start at at least depth 2 to avoid
+                        // running into the caret of this item.
+                        acc.max(2)
+                    } else {
+                        // Non-empty messages take up at # lines + 1 black line
+                        // for separation
+                        acc + item.message.lines().count() + 1
+                    }
+                });
                 let total_depth = (total_depth - 1).max(1);
+                // A temporary buffer to store the elements to be printed.
+                // elements[i] = [ (column offset, content) at depth i ]
                 let mut elements: Vec<Vec<(/*column offset*/ usize, ColoredString)>> =
                     vec![vec![]; total_depth];
-
-                let mut cumulative_depth = 0;
+                // The depth, or # lines down from the source line, of the next
+                // item with non-empty message
+                let mut next_item_depth = 0;
                 // Iterate over items from right to left
                 for item in items.iter().rev() {
                     // cumulative_height: the depth of the first line of the message
@@ -118,30 +138,41 @@ impl Diagnostic {
                         Some(color) => s.color(color),
                         None => s.normal(),
                     };
-
-                    let (caret, item_col) = match cumulative_depth {
-                        0 => (
+                    // Compute the caret string and the column offset to start the message
+                    let (caret, item_col) = if next_item_depth == 0 || item.message.is_empty() {
+                        (
+                            // Empirically, Rust seems to use ^ for these kinds
+                            // of caret. Not sure if that observation is
+                            // correct.
                             color(&"^".repeat(caret_length)).bold(),
+                            // Message of the right most item can start just ot
+                            // the right of the caret on the same line
                             item.span.start().column + caret_length + 1,
-                        ),
-                        _ => {
-                            // Draw the vertical line connecting the caret to the message
-                            for element in elements.iter_mut().take(cumulative_depth).skip(1) {
-                                element.push((item.span.start().column, color("|").bold()));
-                            }
-                            (
-                                color(&"-".repeat(caret_length)).bold(),
-                                item.span.start().column,
-                            )
+                        )
+                    } else {
+                        // Message of other non-empty items will need to start
+                        // beneath the caret and connect to the caret with a
+                        // vertical line, which we draw here.
+                        for element in elements.iter_mut().take(next_item_depth).skip(1) {
+                            element.push((item.span.start().column, color("|").bold()));
                         }
+                        (
+                            color(&"-".repeat(caret_length)).bold(),
+                            item.span.start().column, // The message and the vertical line are left-aligned with the caret (for Rust's diagnostics at least)
+                        )
                     };
                     elements[0].push((item.span.start().column, caret));
-                    for line in item.message.lines() {
-                        let line = color(line).bold();
-                        elements[cumulative_depth].push((item_col, line));
-                        cumulative_depth += 1;
+                    // Same as the computation for total_depth
+                    if item.message.is_empty() {
+                        next_item_depth = next_item_depth.max(2);
+                    } else {
+                        for line in item.message.lines() {
+                            let line = color(line).bold();
+                            elements[next_item_depth].push((item_col, line));
+                            next_item_depth += 1;
+                        }
+                        next_item_depth += 1;
                     }
-                    cumulative_depth += 1;
                 }
                 for mut element in elements {
                     element.sort_by_key(|(col, _)| *col);
