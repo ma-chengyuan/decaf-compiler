@@ -5,7 +5,7 @@ use std::rc::Rc;
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Source {
     pub filename: String,
-    pub content: String,
+    pub content: Vec<char>, // Use Vec<char> for guaranteed O(1) indexing.
 }
 
 impl fmt::Display for Source {
@@ -91,10 +91,10 @@ impl Span {
         let mut start = self.start().clone();
         let mut cur = self.start().clone();
         let mut ret = vec![];
-        let source_chars = self.start().source.content.chars();
-        for c in source_chars.take(end_offset).skip(start_offset) {
+        let source_chars = &self.start().source.content;
+        for c in &source_chars[start_offset..end_offset] {
             // Invariant: cur is the location of c.
-            if c == '\n' {
+            if *c == '\n' {
                 ret.push(Span::new(start, cur.clone()));
                 cur.column = 1;
                 cur.line += 1;

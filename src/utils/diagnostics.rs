@@ -79,7 +79,8 @@ impl Diagnostic {
 
         for (source, line_items) in &self.items {
             writeln!(writer, "{}{} {}:", spacing, arrow, source.filename)?;
-            let lines = source.content.lines().collect::<Vec<_>>();
+            let source_str = source.content.iter().collect::<String>();
+            let lines = source_str.lines().collect::<Vec<_>>();
             let mut last_line = 0;
             for (line, items) in line_items {
                 // Print out a transition from the last line
@@ -222,7 +223,8 @@ fn main() {
 */
             "#
             .trim_start()
-            .into(),
+            .chars()
+            .collect(),
         });
         macro_rules! test_span {
             ($o1:literal : $l1:literal : $c1:literal - $o2:literal : $l2:literal : $c2:literal) => {

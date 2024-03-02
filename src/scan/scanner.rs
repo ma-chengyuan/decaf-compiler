@@ -27,7 +27,7 @@ impl Scanner {
                 line: 1,
                 column: 1,
             },
-            all_chars: source.content.chars().collect(),
+            all_chars: source.content.clone(),
             source,
         };
         lexer.cur_char = lexer.all_chars.first().cloned();

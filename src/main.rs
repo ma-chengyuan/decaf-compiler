@@ -50,7 +50,7 @@ fn main_scan(args: utils::cli::Args, mut writer: Box<dyn std::io::Write>) {
     let chars = content.chars().collect::<Vec<_>>();
     let source = Rc::new(Source {
         filename: args.input.to_string_lossy().to_string(),
-        content,
+        content: chars.clone(),
     });
     let mut lexer = Scanner::new(source);
     let mut has_error = false;
@@ -122,7 +122,10 @@ where
 fn scan(path: impl AsRef<Path>) -> (Vec<Spanned<Token>>, Vec<ScannerError>) {
     let filename = path.as_ref().to_string_lossy().to_string();
     let content = std::fs::read_to_string(path).expect("error reading file");
-    let source = Rc::new(Source { filename, content });
+    let source = Rc::new(Source {
+        filename,
+        content: content.chars().collect(),
+    });
     let mut lexer = Scanner::new(source);
     let mut tokens = vec![];
     let mut errors = vec![];
