@@ -668,7 +668,7 @@ impl Parser {
     // Parsing method declaration
 
     fn parse_method_decl(&mut self) -> Result<MethodDecl, ParserError> {
-        let return_type = match &self.current().inner {
+        let return_ty = match &self.current().inner {
             Token::Void => {
                 self.advance();
                 None
@@ -690,7 +690,7 @@ impl Parser {
         let body = self.parse_block()?;
         Ok(MethodDecl {
             name,
-            return_type,
+            return_ty,
             params,
             body,
         })

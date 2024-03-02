@@ -39,6 +39,15 @@ pub enum Location {
     },
 }
 
+impl Location {
+    pub fn ident(&self) -> &Ident {
+        match self {
+            Location::Ident(ident) => ident,
+            Location::ArrayAccess { ident, .. } => ident.ident(),
+        }
+    }
+}
+
 /// Argument to a method call. String literal is only supported for external calls.
 #[derive(Debug, Clone)]
 pub enum MethodCallArg {
@@ -72,7 +81,7 @@ pub enum Expr {
 }
 
 /// Binary operators.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum BinOp {
     Add,
     Sub,
@@ -90,14 +99,14 @@ pub enum BinOp {
 }
 
 /// Unary operators.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum UnaryOp {
     Neg,
     Not,
 }
 
 /// Runtime type of a value.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum Type {
     Int,
     Bool,
@@ -224,7 +233,7 @@ pub struct MethodParam {
 #[derive(Debug, Clone)]
 pub struct MethodDecl {
     pub name: Ident,
-    pub return_type: Option<Type>,
+    pub return_ty: Option<Type>,
     pub params: Vec<MethodParam>,
     pub body: Block,
 }

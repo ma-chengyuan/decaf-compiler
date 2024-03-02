@@ -51,6 +51,14 @@ impl fmt::Display for Type {
 }
 
 impl Type {
+    pub const fn int() -> Self {
+        Self::Primitive(PrimitiveType::Int)
+    }
+
+    pub const fn bool() -> Self {
+        Self::Primitive(PrimitiveType::Bool)
+    }
+
     pub fn from_ast_literal(lit: &RuntimeLiteral) -> Self {
         match lit {
             RuntimeLiteral::Int(_) | RuntimeLiteral::Char(_) => Self::Primitive(PrimitiveType::Int),
@@ -65,24 +73,24 @@ impl Type {
                 // By the Decaf spec, initializers have at least one element.
                 // Non-conformant initializers will be rejected at parse time,
                 // so [0] is safe.
-                let first_type = Self::from_ast_initializer(&elements.inner[0])?;
+                let first_ty = Self::from_ast_initializer(&elements.inner[0])?;
                 for element in &elements.inner[1..] {
-                    let element_type = Self::from_ast_initializer(element)?;
-                    if first_type != element_type {
+                    let element_ty = Self::from_ast_initializer(element)?;
+                    if first_ty != element_ty {
                         return Err(SemanticError::NonhomogeneousArrayInitializer {
                             first: Spanned {
-                                inner: first_type,
+                                inner: first_ty,
                                 span: elements.inner[0].span().clone(),
                             },
                             second: Spanned {
-                                inner: element_type,
+                                inner: element_ty,
                                 span: element.span().clone(),
                             },
                         });
                     }
                 }
                 Ok(Self::Array {
-                    base: Box::new(first_type),
+                    base: Box::new(first_ty),
                     length: elements.inner.len(),
                 })
             }

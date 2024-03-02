@@ -1,8 +1,7 @@
-#![allow(dead_code)]
 use colored::{Color, Colorize};
 
 use crate::{
-    parse::ast::{Ident, IntLiteral},
+    parse::ast::{BinOp, Ident, IntLiteral, UnaryOp},
     scan::location::{Span, Spanned},
     utils::diagnostics::{Diagnostic, DiagnosticItem},
 };
@@ -18,7 +17,7 @@ pub enum SemanticError {
     InvalidMainMethod(Option<Ident>),
     MismatchedInitializerType {
         ident: Ident,
-        init_type: Type,
+        init_ty: Type,
     },
     NonhomogeneousArrayInitializer {
         first: Spanned<Type>,
@@ -34,40 +33,58 @@ pub enum SemanticError {
         decl_site: Ident,
         call_site: Ident,
     },
-    NoReturn {
+    InvalidArgForNonImport {
         decl_site: Ident,
         call_site: Ident,
+        offending_arg: Span,
     },
-    InvalidArgForNonImport {
-        span: Ident,
+    MismatchedArgCount {
+        decl_site: Ident,
+        call_site: Ident,
+        expected: usize,
+        found: usize,
+    },
+    MismatchedArgType {
+        param: Ident,
+        arg: Span,
+        param_ty: Type,
+        arg_ty: Type,
     },
     InvalidReturnType {
-        return_type: Spanned<Type>,
-        expr_type: Spanned<Type>,
+        return_ty: Type,
+        expr_ty: Spanned<Type>,
         method: Ident,
     },
     UnknownVar(Ident),
     UnknownMethod(Ident),
-    InvalidArrayBaseType {
+    IndexingScalar {
         ident: Ident,
         ty: Type,
     },
-    InvalidArrayIndexType {
-        ident: Ident,
-        ty: Type,
-    },
+    InvalidArrayIndex(Spanned<Type>),
     InvalidLen {
         ident: Ident,
         ty: Type,
     },
     InvalidCondition(Spanned<Type>),
-    UnexpectedTypeForOp {
-        ty: Spanned<Type>,
-        expected_types: Vec<Type>,
-    },
-    IncompatibleTypes {
+    InvalidBinOpTypes {
+        op: BinOp,
         lhs: Spanned<Type>,
         rhs: Spanned<Type>,
+    },
+    InvalidUnaryOpType {
+        op: UnaryOp,
+        ty: Spanned<Type>,
+    },
+    MismatchedAssignmentTypes {
+        rhs_ty: Spanned<Type>,
+        lhs_ty: Type,
+        decl_site: Ident,
+    },
+    NonNumericUpdate(Spanned<Type>),
+    NonScalarAssignment {
+        decl_site: Ident,
+        update_site: Ident,
     },
     MissingConstInitializer(Ident),
     ReassigningConst {

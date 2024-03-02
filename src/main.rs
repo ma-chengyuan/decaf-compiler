@@ -5,7 +5,7 @@ mod parse;
 mod scan;
 mod utils;
 
-use inter::SemanticChecker;
+use inter::IrBuilder;
 use parse::parser::Parser;
 use scan::{error::ScannerError, location::Spanned, scanner::Scanner, token::Token};
 use utils::diagnostics::Diagnostic;
@@ -101,7 +101,7 @@ fn main_inter(args: utils::cli::Args, _writer: Box<dyn std::io::Write>) {
     let mut parser = Parser::new(tokens);
     let (ast, errors) = parser.parse_program();
     dump_errors_and_exit(errors);
-    let mut checker = SemanticChecker::new();
+    let mut checker = IrBuilder::new();
     let errors = checker.check_program(&ast);
     dump_errors_and_exit(errors);
 }
