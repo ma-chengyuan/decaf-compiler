@@ -1,9 +1,13 @@
 #![allow(dead_code)]
+use std::rc::Rc;
+
 use num_bigint::BigInt;
 
 use crate::scan::location::{Span, Spanned};
 
-pub type Ident = Spanned<String>;
+// Use Rc<str> for identifiers to avoid cloning.
+pub type IdentStr = Rc<str>;
+pub type Ident = Spanned<IdentStr>;
 pub type IntLiteral = Spanned<BigInt>;
 pub type BoolLiteral = Spanned<bool>;
 pub type CharLiteral = Spanned<char>;

@@ -47,7 +47,7 @@ fn main() {
 
 fn main_scan(args: utils::cli::Args, mut writer: Box<dyn std::io::Write>) {
     let content = std::fs::read_to_string(&args.input).expect("error reading file");
-    let chars = content.chars().collect::<Vec<_>>();
+    let chars: Rc<[char]> = content.chars().collect::<Vec<_>>().into();
     let source = Rc::new(Source {
         filename: args.input.to_string_lossy().to_string(),
         content: chars.clone(),

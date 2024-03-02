@@ -5,7 +5,7 @@ use std::rc::Rc;
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Source {
     pub filename: String,
-    pub content: Vec<char>, // Use Vec<char> for guaranteed O(1) indexing.
+    pub content: Rc<[char]>, // Guaranteed O(1) indexing and cloning.
 }
 
 impl fmt::Display for Source {

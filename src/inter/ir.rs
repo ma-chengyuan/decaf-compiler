@@ -1,6 +1,9 @@
 use std::collections::HashMap;
 
-use crate::{parse::ast::Ident, scan::location::Span};
+use crate::{
+    parse::ast::{Ident, IdentStr},
+    scan::location::Span,
+};
 
 use super::{constant::Const, types::Type};
 
@@ -29,7 +32,7 @@ pub struct StackSlotRef(usize);
 /// addresses.
 #[derive(Debug, Clone)]
 pub enum Address {
-    Global(String),
+    Global(IdentStr),
     Local(StackSlotRef),
 }
 
@@ -95,7 +98,7 @@ pub enum Inst {
     },
     /// Call a method.
     Call {
-        method: String,
+        method: IdentStr,
         args: Vec<InstRef>,
     },
     /// Loads a string literal from the data section, only used in external calls.

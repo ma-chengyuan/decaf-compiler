@@ -173,7 +173,7 @@ impl Parser {
                 self.advance();
                 Ok(ident)
             }
-            _ => unexpected!(self, Token::Identifier(Default::default())),
+            _ => unexpected!(self, Token::Identifier("".into())),
         }
     }
 
@@ -360,7 +360,7 @@ impl Parser {
             }
             _ => unexpected!(
                 self,
-                Token::Identifier(Default::default()),
+                Token::Identifier("".into()),
                 Token::IntLiteral(Default::default()),
                 Token::BoolLiteral(Default::default()),
                 Token::CharLiteral(Default::default()),
@@ -445,7 +445,7 @@ impl Parser {
             }
             _ => unexpected!(
                 self,
-                Token::Identifier(Default::default()),
+                Token::Identifier("".into()),
                 Token::If,
                 Token::While,
                 Token::Return,

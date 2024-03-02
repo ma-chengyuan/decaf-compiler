@@ -1,5 +1,5 @@
 use num_bigint::BigInt;
-use std::fmt;
+use std::{fmt, rc::Rc};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Token {
@@ -23,7 +23,7 @@ pub enum Token {
     // Comment,
 
     // Identifier
-    Identifier(String),
+    Identifier(Rc<str>),
 
     // Literals
     IntLiteral(BigInt), // BigInt is used to represent arbitrary precision integers, we defer range checking to future stages

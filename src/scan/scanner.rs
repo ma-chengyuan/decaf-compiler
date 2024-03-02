@@ -13,7 +13,7 @@ use super::{
 pub struct Scanner {
     cur_char: Option<char>,
     cur_loc: Location,
-    all_chars: Vec<char>,
+    all_chars: Rc<[char]>,
     source: Rc<Source>,
 }
 
@@ -77,7 +77,7 @@ impl Scanner {
             "len" => Token::Len,
             "true" => Token::BoolLiteral(true),
             "void" => Token::Void,
-            _ => Token::Identifier(identifier),
+            _ => Token::Identifier(identifier.into()),
         };
         Ok(Spanned {
             inner: token,

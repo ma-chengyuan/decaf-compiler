@@ -70,14 +70,14 @@ impl IrBuilder {
 
     fn add_global(&mut self, var: Var, init_value: Const) {
         self.globals
-            .insert(var.name.inner.clone(), GlobalVar { var, init_value });
+            .insert(var.name.inner.to_string(), GlobalVar { var, init_value });
     }
 
     pub fn check_program(&mut self, program: &Program) -> Vec<SemanticError> {
         // Add imported methods to the symbol table
         for import_decl in &program.import_decls {
             self.imported_methods
-                .insert(import_decl.0.inner.clone(), import_decl.0.clone());
+                .insert(import_decl.0.inner.to_string(), import_decl.0.clone());
         }
         for field_decl in &program.field_decls {
             FieldDeclContext::Global(self).check_field_decl(field_decl);
@@ -98,8 +98,8 @@ impl IrBuilder {
         let name = &method_decl.name;
         if let Some(prev_decl) = self
             .imported_methods
-            .get(&name.inner)
-            .or_else(|| self.methods.get(&name.inner).map(|method| &method.name))
+            .get(&*name.inner)
+            .or_else(|| self.methods.get(&*name.inner).map(|method| &method.name))
         {
             self.emit_error(SemanticError::DuplicateDecls {
                 first: prev_decl.clone(),
@@ -108,7 +108,7 @@ impl IrBuilder {
             return;
         }
         let method = MethodBuilder::new(self, method_decl).build();
-        self.methods.insert(name.inner.clone(), method);
+        self.methods.insert(name.inner.to_string(), method);
     }
 }
 
@@ -186,14 +186,14 @@ impl<'a> MethodBuilder<'a> {
     fn add_params(&mut self, params: Vec<(Ident, Type)>) {
         let mut param_scope = HashMap::<String, LocalVar>::new();
         for (name, ty) in params {
-            if let Some(prev_decl) = param_scope.get(&name.inner) {
+            if let Some(prev_decl) = param_scope.get(&*name.inner) {
                 self.emit_error(SemanticError::DuplicateDecls {
                     first: prev_decl.var.name.clone(),
                     second: name.clone(),
                 });
                 continue;
             }
-            let name_str = name.inner.clone();
+            let name_str = name.inner.to_string();
             let stack_slot = self.method.next_stack_slot(ty.clone(), name.clone());
             let local_var = LocalVar {
                 var: Var {
@@ -209,7 +209,7 @@ impl<'a> MethodBuilder<'a> {
     }
 
     fn add_local(&mut self, var: Var, init_value: Const, block: BlockRef) {
-        let name = var.name.inner.clone();
+        let name = var.name.inner.to_string();
         let stack_slot = self
             .method
             .next_stack_slot(var.ty.clone(), var.name.clone());
@@ -849,7 +849,7 @@ impl<'a> MethodBuilder<'a> {
         call: &MethodCall,
         mut cur_block: BlockRef,
     ) -> (BlockRef, InstRef, Type) {
-        let method = match self.builder.methods.get(&call.name.inner) {
+        let method = match self.builder.methods.get(&*call.name.inner) {
             Some(method) => Some(method),
             None if call.name.inner == self.method.name.inner => Some(&self.method),
             None => None,
@@ -903,7 +903,11 @@ impl<'a> MethodBuilder<'a> {
                 },
             );
             (cur_block, call_inst, ty)
-        } else if self.builder.imported_methods.contains_key(&call.name.inner) {
+        } else if self
+            .builder
+            .imported_methods
+            .contains_key(&*call.name.inner)
+        {
             let mut arg_insts = Vec::with_capacity(call.args.len());
             for arg in call.args.iter() {
                 match arg {
