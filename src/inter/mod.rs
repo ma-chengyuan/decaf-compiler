@@ -434,6 +434,16 @@ impl<'a> MethodBuilder<'a> {
         block: &Block,
         cur_block: BlockRef,
     ) -> BlockRef {
+        if let Some((var, _)) = self.lookup(&loop_var_name.inner) {
+            // Loop variable must be an integer.
+            if var.ty != Type::Invalid && var.ty != Type::int() {
+                self.emit_error(SemanticError::InvalidLoopVariable {
+                    decl_site: var.name.clone(),
+                    use_site: loop_var_name.clone(),
+                    ty: var.ty.clone(),
+                });
+            }
+        }
         let next_block = self.build_store(&Location::Ident(loop_var_name.clone()), init, cur_block);
         let loop_block = self.method.next_block();
         let cond_block = self.method.next_block();

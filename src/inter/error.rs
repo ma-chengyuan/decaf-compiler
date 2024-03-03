@@ -90,6 +90,11 @@ pub enum SemanticError {
     InvalidBreak(Span),
     InvalidContinue(Span),
     InvalidIntLiteral(IntLiteral),
+    InvalidLoopVariable {
+        decl_site: Ident,
+        use_site: Ident,
+        ty: Type,
+    },
 }
 
 impl From<&SemanticError> for Diagnostic {
@@ -396,6 +401,22 @@ impl From<&SemanticError> for Diagnostic {
                 .add_item(DiagnosticItem {
                     message: "should be in [-9223372036854775808, 9223372036854775807]".to_string(),
                     span: lit.span.clone(),
+                    color: Some(Color::Red),
+                }),
+            SemanticError::InvalidLoopVariable {
+                decl_site,
+                use_site,
+                ty,
+            } => Diagnostic::new()
+                .with_pre_text(&format!("{}: loop variable must be int", error_str))
+                .add_item(DiagnosticItem {
+                    message: format!("declared type: {}", ty),
+                    span: decl_site.span.clone(),
+                    color: Some(Color::Blue),
+                })
+                .add_item(DiagnosticItem {
+                    message: "used here".to_string(),
+                    span: use_site.span.clone(),
                     color: Some(Color::Red),
                 }),
         }
