@@ -944,6 +944,13 @@ impl<'a> MethodBuilder<'a> {
         call: &MethodCall,
         mut cur_block: BlockRef,
     ) -> (BlockRef, InstRef, Type) {
+        if let Some((var, _)) = self.lookup(&call.name.inner) {
+            self.emit_error(SemanticError::InvalidCall {
+                decl_site: var.name.clone(),
+                use_site: call.name.clone(),
+            });
+            return (cur_block, InstRef::invalid(), Type::Invalid);
+        }
         let method = match self.builder.methods.get(&*call.name.inner) {
             Some(method) => Some(method),
             None if call.name.inner == self.method.name.inner => Some(&self.method),

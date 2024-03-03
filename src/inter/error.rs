@@ -95,6 +95,10 @@ pub enum SemanticError {
         use_site: Ident,
         ty: Type,
     },
+    InvalidCall {
+        decl_site: Ident,
+        use_site: Ident,
+    },
 }
 
 impl From<&SemanticError> for Diagnostic {
@@ -416,6 +420,24 @@ impl From<&SemanticError> for Diagnostic {
                 })
                 .add_item(DiagnosticItem {
                     message: "used here".to_string(),
+                    span: use_site.span.clone(),
+                    color: Some(Color::Red),
+                }),
+            SemanticError::InvalidCall {
+                decl_site,
+                use_site,
+            } => Diagnostic::new()
+                .with_pre_text(&format!(
+                    "{}: \"{}\" is not a method",
+                    error_str, decl_site.inner
+                ))
+                .add_item(DiagnosticItem {
+                    message: "defined here".to_string(),
+                    span: decl_site.span.clone(),
+                    color: Some(Color::Blue),
+                })
+                .add_item(DiagnosticItem {
+                    message: "attempted call here".to_string(),
                     span: use_site.span.clone(),
                     color: Some(Color::Red),
                 }),
