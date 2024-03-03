@@ -74,6 +74,13 @@ impl IrBuilder {
     ) -> Result<ir::Program, Vec<SemanticError>> {
         // Add imported methods to the symbol table
         for import_decl in &program.import_decls {
+            if let Some(prev_decl) = self.imported_methods.get(&*import_decl.0.inner) {
+                self.emit_error(SemanticError::DuplicateDecls {
+                    first: prev_decl.clone(),
+                    second: import_decl.0.clone(),
+                });
+                continue;
+            }
             self.imported_methods
                 .insert(import_decl.0.inner.to_string(), import_decl.0.clone());
         }
