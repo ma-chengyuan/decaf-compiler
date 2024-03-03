@@ -302,6 +302,14 @@ impl<'a> MethodBuilder<'a> {
                     }));
                     return next_block;
                 }
+                if let Some((var, _)) = self.lookup(&location.ident().inner) {
+                    if var.is_const {
+                        self.emit_error(SemanticError::ReassigningConst {
+                            decl_site: var.name.clone(),
+                            assign_site: location.ident().clone(),
+                        });
+                    }
+                }
                 let (next_block, rhs) = match op {
                     UpdateOp::Increment | UpdateOp::Decrement => {
                         let one = self
