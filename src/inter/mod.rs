@@ -858,6 +858,13 @@ impl<'a> MethodBuilder<'a> {
                 return cur_block;
             }
         };
+        if var.is_const {
+            self.emit_error(SemanticError::ReassigningConst {
+                decl_site: var.name.clone(),
+                assign_site: ident.clone(),
+            });
+            return cur_block;
+        }
         match &var.ty {
             Type::Primitive(_) => {
                 let ident = ident.clone();
