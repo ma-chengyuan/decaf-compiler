@@ -223,12 +223,15 @@ impl Parser {
                 Ok(RuntimeLiteral::Int(lit))
             }
             Token::Sub => {
+                let start = self.current().span.start().clone();
                 self.advance();
                 match &self.current().inner {
                     Token::IntLiteral(value) => {
+                        let span = self.current().span.clone();
+                        let span = Span::new(start, span.end().clone());
                         let lit = IntLiteral {
                             inner: -value,
-                            span: self.current().span.clone(),
+                            span,
                         };
                         self.advance();
                         Ok(RuntimeLiteral::Int(lit))
@@ -353,10 +356,18 @@ impl Parser {
                     _ => unreachable!(),
                 };
                 self.advance();
-                Ok(Expr::UnaryOp {
-                    op,
-                    expr: Box::new(parse_spanned!(self.parse_expr_atom())),
-                })
+                let expr = parse_spanned!(self.parse_expr_atom());
+                if let Expr::Literal(RuntimeLiteral::Int(lit)) = expr.inner {
+                    Ok(Expr::Literal(RuntimeLiteral::Int(Spanned {
+                        inner: -lit.inner,
+                        span: expr.span,
+                    })))
+                } else {
+                    Ok(Expr::UnaryOp {
+                        op,
+                        expr: Box::new(expr),
+                    })
+                }
             }
             _ => unexpected!(
                 self,
