@@ -613,7 +613,13 @@ impl<'a> MethodBuilder<'a> {
     ) -> (BlockRef, InstRef, Type) {
         let (next_block, lhs_inst, lhs_ty) = self.build_expr(lhs, cur_block);
         let (next_block, rhs_inst, rhs_ty) = self.build_expr(rhs, next_block);
-        if lhs_ty == Type::int() && rhs_ty == Type::int() {
+        let legal_ty = match op {
+            BinOp::Equal | BinOp::NotEqual => {
+                lhs_ty == rhs_ty && (lhs_ty == Type::int() || lhs_ty == Type::bool())
+            }
+            _ => lhs_ty == Type::int() && rhs_ty == Type::int(),
+        };
+        if legal_ty {
             let inst = self
                 .method
                 .next_inst(next_block, inst_builder(lhs_inst, rhs_inst));
