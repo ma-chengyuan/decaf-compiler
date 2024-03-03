@@ -94,7 +94,7 @@ fn main_parse(args: utils::cli::Args, _writer: Box<dyn std::io::Write>) {
     dump_errors_and_exit(errors);
 }
 
-fn main_inter(args: utils::cli::Args, _writer: Box<dyn std::io::Write>) {
+fn main_inter(args: utils::cli::Args, mut writer: Box<dyn std::io::Write>) {
     // TODO: Deduplicate this code with main_parse
     let (tokens, errors) = scan(args.input);
     dump_errors_and_exit(errors);
@@ -102,8 +102,11 @@ fn main_inter(args: utils::cli::Args, _writer: Box<dyn std::io::Write>) {
     let (ast, errors) = parser.parse_program();
     dump_errors_and_exit(errors);
     let mut checker = IrBuilder::new();
-    let errors = checker.check_program(&ast);
-    dump_errors_and_exit(errors);
+    let res = checker.check_program(&ast);
+    match res {
+        Ok(program) => writeln!(writer, "{}", program).unwrap(),
+        Err(errors) => dump_errors_and_exit(errors),
+    }
 }
 
 fn dump_errors_and_exit<T>(errors: Vec<T>)

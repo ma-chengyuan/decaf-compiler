@@ -8,8 +8,8 @@ use num_traits::ToPrimitive;
 use crate::{
     inter::{ir::Inst, types::PrimitiveType},
     parse::ast::{
-        BinOp, Block, Expr, FieldDecl, FieldDeclarator, Ident, Location, MethodCall, MethodCallArg,
-        MethodDecl, Program, RuntimeLiteral, Stmt, UnaryOp, UpdateOp,
+        self, BinOp, Block, Expr, FieldDecl, FieldDeclarator, Ident, Location, MethodCall,
+        MethodCallArg, MethodDecl, RuntimeLiteral, Stmt, UnaryOp, UpdateOp,
     },
     scan::location::{Span, Spanned},
 };
@@ -17,7 +17,7 @@ use crate::{
 use self::{
     constant::{Const, INT_0, INT_MAX},
     error::SemanticError,
-    ir::{Address, BlockRef, InstRef, Method, StackSlotRef, Terminator},
+    ir::{Address, BlockRef, GlobalVar, InstRef, Method, StackSlotRef, Terminator},
     types::Type,
 };
 
@@ -33,19 +33,13 @@ struct Var {
     is_const: bool,
 }
 
-struct GlobalVar {
-    var: Var,
-    init_value: Const,
-}
-
 pub struct IrBuilder {
     errors: Vec<SemanticError>,
 
     methods: HashMap<String, Method>,
     imported_methods: HashMap<String, Ident>,
-
-    globals: HashMap<String, GlobalVar>,
-    locals: Vec<HashMap<String, Var>>,
+    global_vars: HashMap<String, Var>,
+    global_inits: HashMap<String, Const>,
 }
 
 impl IrBuilder {
@@ -55,8 +49,8 @@ impl IrBuilder {
             methods: HashMap::new(),
             imported_methods: HashMap::new(),
 
-            globals: HashMap::new(),
-            locals: Vec::new(),
+            global_vars: HashMap::new(),
+            global_inits: HashMap::new(),
         }
     }
 
@@ -65,15 +59,19 @@ impl IrBuilder {
     }
 
     fn lookup(&self, name: &str) -> Option<&Var> {
-        self.globals.get(name).map(|gvar| &gvar.var)
+        self.global_vars.get(name)
     }
 
     fn add_global(&mut self, var: Var, init_value: Const) {
-        self.globals
-            .insert(var.name.inner.to_string(), GlobalVar { var, init_value });
+        self.global_inits
+            .insert(var.name.inner.to_string(), init_value);
+        self.global_vars.insert(var.name.inner.to_string(), var);
     }
 
-    pub fn check_program(&mut self, program: &Program) -> Vec<SemanticError> {
+    pub fn check_program(
+        &mut self,
+        program: &ast::Program,
+    ) -> Result<ir::Program, Vec<SemanticError>> {
         // Add imported methods to the symbol table
         for import_decl in &program.import_decls {
             self.imported_methods
@@ -91,7 +89,27 @@ impl IrBuilder {
                 invalid.map(|m| m.name.clone()),
             )),
         }
-        std::mem::take(&mut self.errors)
+        if self.errors.is_empty() {
+            Ok(ir::Program {
+                imports: std::mem::take(&mut self.imported_methods),
+                methods: std::mem::take(&mut self.methods),
+                globals: std::mem::take(&mut self.global_vars)
+                    .into_values()
+                    .map(|v| {
+                        (
+                            v.name.inner.to_string(),
+                            GlobalVar {
+                                init: self.global_inits.remove(&*v.name.inner).unwrap(),
+                                ty: v.ty,
+                                name: v.name,
+                            },
+                        )
+                    })
+                    .collect(),
+            })
+        } else {
+            Err(self.errors.clone())
+        }
     }
 
     fn check_method_decl(&mut self, method_decl: &MethodDecl) {
@@ -131,11 +149,6 @@ struct MethodBuilder<'a> {
     /// How many loops are we currently in?
     /// Used to determine if a `break` or `continue` statement is valid.
     loop_labels: Vec<LoopLabels>,
-}
-
-enum ExprContext {
-    Normal,
-    Branch { true_: BlockRef, false_: BlockRef },
 }
 
 impl<'a> MethodBuilder<'a> {
@@ -285,7 +298,7 @@ impl<'a> MethodBuilder<'a> {
                     UpdateOp::Increment | UpdateOp::Decrement => {
                         let one = self
                             .method
-                            .next_inst(next_block, Inst::LoadConst(Const::Int(0)));
+                            .next_inst(next_block, Inst::LoadConst(Const::Int(1)));
                         (next_block, one)
                     }
                     UpdateOp::AddAssign(value)
@@ -343,13 +356,24 @@ impl<'a> MethodBuilder<'a> {
     ) -> BlockRef {
         let true_block = self.method.next_block();
         let false_block = self.method.next_block();
+
         self.build_cond(condition, cur_block, true_block, false_block);
+
+        let if_line_number = condition.span.start().line;
+        self.method.annotate_block_mut(true_block).str =
+            Some(format!("if-then block at line {}", if_line_number));
+
         let then_block = self.build_block(then_block, true_block);
+
         if let Some(else_block) = else_block {
+            self.method.annotate_block_mut(false_block).str =
+                Some(format!("if-else block at line {}", if_line_number));
+
             let else_block = self.build_block(else_block, false_block);
             let next_block = self.method.next_block();
             self.method.block_mut(then_block).term = Terminator::Jump(next_block);
             self.method.block_mut(else_block).term = Terminator::Jump(next_block);
+
             next_block
         } else {
             self.method.block_mut(then_block).term = Terminator::Jump(false_block);
@@ -366,6 +390,13 @@ impl<'a> MethodBuilder<'a> {
         let loop_block = self.method.next_block();
         let cond_block = self.method.next_block();
         let next_block = self.method.next_block();
+
+        let loop_line_number = condition.span.start().line;
+        self.method.annotate_block_mut(loop_block).str =
+            Some(format!("while loop body at line {}", loop_line_number));
+        self.method.annotate_block_mut(cond_block).str =
+            Some(format!("while loop condition at line {}", loop_line_number));
+
         self.method.block_mut(cur_block).term = Terminator::Jump(cond_block);
         self.build_cond(condition, cond_block, loop_block, next_block);
         self.loop_labels.push(LoopLabels {
@@ -391,6 +422,15 @@ impl<'a> MethodBuilder<'a> {
         let loop_block = self.method.next_block();
         let cond_block = self.method.next_block();
         let update_block = self.method.next_block();
+
+        let loop_line_number = loop_var_name.span.start().line;
+        self.method.annotate_block_mut(loop_block).str =
+            Some(format!("for loop body at line {}", loop_line_number));
+        self.method.annotate_block_mut(update_block).str =
+            Some(format!("for loop update at line {}", loop_line_number));
+        self.method.annotate_block_mut(cond_block).str =
+            Some(format!("for loop condition at line {}", loop_line_number));
+
         self.method.block_mut(next_block).term = Terminator::Jump(cond_block);
         let next_block = self.method.next_block();
         self.build_cond(cond, cond_block, loop_block, next_block);
@@ -438,7 +478,10 @@ impl<'a> MethodBuilder<'a> {
             }
             self.method.block_mut(cur_block).term = Terminator::Return(None);
         }
-        self.method.next_block()
+        let unreachable_block = self.method.next_block();
+        self.method.annotate_block_mut(unreachable_block).str =
+            Some("unreachable (after return)".to_string());
+        unreachable_block
     }
 
     fn build_break(&mut self, span: &Span, cur_block: BlockRef) -> BlockRef {
@@ -468,6 +511,19 @@ impl<'a> MethodBuilder<'a> {
     }
 
     fn build_expr(
+        &mut self,
+        expr: &Spanned<Expr>,
+        cur_block: BlockRef,
+    ) -> (BlockRef, InstRef, Type) {
+        let (next_block, inst, ty) = self.build_expr_(expr, cur_block);
+        if inst != InstRef::invalid() {
+            // Annotate the instruction with the span of the expression.
+            self.method.annotate_inst_mut(inst).span = Some(expr.span.clone());
+        }
+        (next_block, inst, ty)
+    }
+
+    fn build_expr_(
         &mut self,
         expr: &Spanned<Expr>,
         cur_block: BlockRef,
@@ -962,8 +1018,8 @@ impl<'a> MethodBuilder<'a> {
     }
 
     pub fn build(mut self) -> Method {
-        let entry = self.method.next_block();
-        self.build_block(&self.method_decl.body, entry);
+        self.method.annotate_block_mut(self.method.entry).str = Some("entry".to_string());
+        self.build_block(&self.method_decl.body, self.method.entry);
         self.method
     }
 }

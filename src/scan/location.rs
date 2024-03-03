@@ -78,6 +78,13 @@ impl Span {
         Self::new(start, end)
     }
 
+    pub fn source_str(&self) -> String {
+        let source_chars = &self.start().source.content;
+        source_chars[self.start().offset..self.end().offset]
+            .iter()
+            .collect()
+    }
+
     /// Break a span that could span multiple lines into multiple spans that
     /// each span only one line.
     /// This is useful for diagnostics, but slow!

@@ -1,8 +1,10 @@
+use core::fmt;
 use std::collections::HashMap;
 
 use crate::{
     parse::ast::{Ident, IdentStr},
     scan::location::Span,
+    utils::formatting::{Table, TableRow},
 };
 
 use super::{constant::Const, types::Type};
@@ -18,14 +20,32 @@ impl InstRef {
     }
 }
 
+impl fmt::Display for InstRef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "%{}", self.0)
+    }
+}
+
 /// An opaque reference to a block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct BlockRef(usize);
+
+impl fmt::Display for BlockRef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "block_{}", self.0)
+    }
+}
 
 /// An opaque reference to a stack slot.
 /// Stack slots are used to represent local variables and function parameters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct StackSlotRef(usize);
+
+impl fmt::Display for StackSlotRef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "stack:{}", self.0)
+    }
+}
 
 /// An address in memory. This is used for loads and stores.
 /// We don't support pointer arithmetic, so we don't need to support arbitrary
@@ -34,6 +54,15 @@ pub struct StackSlotRef(usize);
 pub enum Address {
     Global(IdentStr),
     Local(StackSlotRef),
+}
+
+impl fmt::Display for Address {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Address::Global(ident) => write!(f, "global:{}", ident),
+            Address::Local(slot) => write!(f, "{}", slot),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -105,11 +134,74 @@ pub enum Inst {
     LoadStringLiteral(String),
 }
 
+impl fmt::Display for Inst {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Inst::Illegal => write!(f, "illegal"),
+            Inst::Phi(map) => {
+                write!(f, "phi {{")?;
+                for (block, inst) in map {
+                    write!(f, " {} -> {},", block, inst)?;
+                }
+                write!(f, " }}")
+            }
+            Inst::Add(lhs, rhs) => write!(f, "add {}, {}", lhs, rhs),
+            Inst::Sub(lhs, rhs) => write!(f, "sub {}, {}", lhs, rhs),
+            Inst::Mul(lhs, rhs) => write!(f, "mul {}, {}", lhs, rhs),
+            Inst::Div(lhs, rhs) => write!(f, "div {}, {}", lhs, rhs),
+            Inst::Mod(lhs, rhs) => write!(f, "mod {}, {}", lhs, rhs),
+            Inst::Neg(operand) => write!(f, "neg {}", operand),
+            Inst::Not(operand) => write!(f, "not {}", operand),
+            Inst::Eq(lhs, rhs) => write!(f, "eq {}, {}", lhs, rhs),
+            Inst::Neq(lhs, rhs) => write!(f, "neq {}, {}", lhs, rhs),
+            Inst::Less(lhs, rhs) => write!(f, "less {}, {}", lhs, rhs),
+            Inst::LessEq(lhs, rhs) => write!(f, "less_eq {}, {}", lhs, rhs),
+            Inst::LoadConst(c) => write!(f, "load_const {}", c),
+            Inst::Load(addr) => write!(f, "load {}", addr),
+            Inst::Store { addr, value } => write!(f, "store {} {}", addr, value),
+            Inst::LoadArray { addr, index } => write!(f, "load_array {}[{}]", addr, index),
+            Inst::StoreArray { addr, index, value } => {
+                write!(f, "store_array {}[{}] {}", addr, index, value)
+            }
+            Inst::Initialize { stack_slot, value } => {
+                write!(f, "initialize {} {}", stack_slot, value)
+            }
+            Inst::Call { method, args } => {
+                write!(f, "call {}(", method)?;
+                for (i, arg) in args.iter().enumerate() {
+                    if i != 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", arg)?;
+                }
+                write!(f, ")")
+            }
+            Inst::LoadStringLiteral(lit) => write!(f, "load_string_literal {:?}", lit),
+        }
+    }
+}
+
 /// Some metadata to help debugging?
-#[derive(Debug, Clone)]
-struct InstAnnotation {
-    span: Option<Span>,   // Maybe an instruction is associated with a span?
-    ident: Option<Ident>, // Maybe an instruction is associated with an identifier?
+#[derive(Debug, Clone, Default)]
+pub struct Annotation {
+    pub str: Option<String>,
+    pub span: Option<Span>, // Maybe an instruction is associated with a span?
+    pub ident: Option<Ident>, // Maybe an instruction is associated with an identifier?
+}
+
+impl fmt::Display for Annotation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(str) = &self.str {
+            write!(f, "{} ", str)?;
+        }
+        if let Some(span) = &self.span {
+            write!(f, "{:?} ", span.source_str())?;
+        }
+        if let Some(ident) = &self.ident {
+            write!(f, "{:?} ", ident.inner)?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -121,6 +213,21 @@ pub enum Terminator {
         true_: BlockRef,
         false_: BlockRef,
     },
+}
+
+impl fmt::Display for Terminator {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Terminator::Return(None) => write!(f, "return"),
+            Terminator::Return(Some(inst)) => write!(f, "return {}", inst),
+            Terminator::Jump(block) => write!(f, "jump {}", block),
+            Terminator::CondJump {
+                cond,
+                true_,
+                false_,
+            } => write!(f, "cond_jump {} {} {}", cond, true_, false_),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -143,20 +250,29 @@ pub struct Method {
     blocks: Vec<Block>,
     insts: Vec<Inst>,
     stack_slots: Vec<StackSlot>,
-    annotations: HashMap<InstRef, InstAnnotation>,
 
+    inst_annotations: HashMap<InstRef, Annotation>,
+    block_annotations: HashMap<BlockRef, Annotation>,
+
+    pub entry: BlockRef,
     pub return_ty: Type,
     pub params: Vec<(Ident, Type)>,
 }
 
 impl Method {
     pub fn new(name: Ident, return_ty: Type, params: Vec<(Ident, Type)>) -> Self {
+        let entry = BlockRef(0);
         Self {
             name,
-            blocks: Vec::new(),
+            blocks: vec![Block {
+                insts: Vec::new(),
+                term: Terminator::Return(None),
+            }],
             insts: Vec::new(),
             stack_slots: Vec::new(),
-            annotations: HashMap::new(),
+            inst_annotations: HashMap::new(),
+            block_annotations: HashMap::new(),
+            entry,
             return_ty,
             params,
         }
@@ -194,6 +310,14 @@ impl Method {
         &mut self.insts[inst_ref.0]
     }
 
+    pub fn annotate_inst_mut(&mut self, inst_ref: InstRef) -> &mut Annotation {
+        self.inst_annotations.entry(inst_ref).or_default()
+    }
+
+    pub fn annotate_block_mut(&mut self, block_ref: BlockRef) -> &mut Annotation {
+        self.block_annotations.entry(block_ref).or_default()
+    }
+
     pub fn next_stack_slot(&mut self, ty: Type, name: Ident) -> StackSlotRef {
         let slot_ref = StackSlotRef(self.stack_slots.len());
         self.stack_slots.push(StackSlot { ty, name });
@@ -216,13 +340,94 @@ impl Method {
     }
 }
 
+const INDENT: &str = "   ";
+
+impl fmt::Display for Method {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} {}(", self.return_ty, self.name.inner)?;
+        for (i, (name, ty)) in self.params.iter().enumerate() {
+            if i != 0 {
+                write!(f, ", ")?;
+            }
+            write!(f, "{} {}", ty, name.inner)?;
+        }
+        writeln!(f, ") {{")?;
+        writeln!(f, "stack:")?;
+        let mut stack_slots = Table::new();
+        for (i, stack_slot) in self.stack_slots.iter().enumerate() {
+            stack_slots.add_row(
+                TableRow::new()
+                    .add(INDENT)
+                    .add(StackSlotRef(i))
+                    .add(&stack_slot.ty)
+                    .add(&stack_slot.name.inner),
+            );
+        }
+        write!(f, "{}", stack_slots)?;
+        for (i, block) in self.blocks.iter().enumerate() {
+            write!(f, "{}:", BlockRef(i))?;
+            if let Some(annotation) = self.block_annotations.get(&BlockRef(i)) {
+                write!(f, " ; {}", annotation)?;
+            }
+            writeln!(f)?;
+            let mut insts = Table::new();
+            for inst in &block.insts {
+                if *inst == InstRef::invalid() {
+                    continue;
+                }
+                let mut row = TableRow::new()
+                    .add(INDENT)
+                    .add(inst)
+                    .add('=')
+                    .add(self.inst(*inst));
+                if let Some(annotation) = self.inst_annotations.get(inst) {
+                    row = row.add(format!("; {}", annotation));
+                }
+                insts.add_row(row);
+            }
+            write!(f, "{}", insts)?;
+            writeln!(f, "{} {}", INDENT, block.term)?;
+        }
+        write!(f, "}}")
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct GlobalVar {
-    name: Ident,
-    ty: Type,
+    pub name: Ident,
+    pub ty: Type,
+    pub init: Const,
 }
 
 #[derive(Debug, Clone)]
 pub struct Program {
-    imports: HashMap<String, Ident>,
-    methods: HashMap<String, Method>,
+    pub imports: HashMap<String, Ident>,
+    pub methods: HashMap<String, Method>,
+    pub globals: HashMap<String, GlobalVar>,
+}
+
+impl fmt::Display for Program {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "imports:")?;
+        for import in self.imports.keys() {
+            writeln!(f, "{} {}", INDENT, import)?;
+        }
+        writeln!(f, "globals:")?;
+        let mut globals = Table::new();
+        for global in self.globals.values() {
+            globals.add_row(
+                TableRow::new()
+                    .add(INDENT)
+                    .add(&global.name.inner)
+                    .add(&global.ty)
+                    .add('=')
+                    .add(&global.init),
+            );
+        }
+        write!(f, "{}", globals)?;
+        for method in self.methods.values() {
+            writeln!(f, "{}", method)?;
+        }
+        Ok(())
+    }
 }

@@ -29,10 +29,6 @@ pub enum SemanticError {
         length: IntLiteral,
     },
     MissingArrayLength(Ident),
-    InvalidCall {
-        decl_site: Ident,
-        call_site: Ident,
-    },
     InvalidArgForNonImport {
         decl_site: Ident,
         call_site: Ident,
@@ -105,12 +101,12 @@ impl From<&SemanticError> for Diagnostic {
                 .add_item(DiagnosticItem {
                     message: "first declaration".to_string(),
                     span: first.span.clone(),
-                    color: Some(Color::Red),
+                    color: Some(Color::Blue),
                 })
                 .add_item(DiagnosticItem {
                     message: "second declaration".to_string(),
                     span: second.span.clone(),
-                    color: Some(Color::Yellow),
+                    color: Some(Color::Red),
                 }),
             SemanticError::InvalidMainMethod(method) => {
                 let diag = Diagnostic::new()
@@ -137,12 +133,12 @@ impl From<&SemanticError> for Diagnostic {
                 .add_item(DiagnosticItem {
                     message: format!("type: {}", first.inner),
                     span: first.span.clone(),
-                    color: Some(Color::Red),
+                    color: Some(Color::Blue),
                 })
                 .add_item(DiagnosticItem {
                     message: format!("type: {}", second.inner),
                     span: second.span.clone(),
-                    color: Some(Color::Yellow),
+                    color: Some(Color::Red),
                 }),
             SemanticError::CoexistingArrayLengthAndInitializer(ident) => Diagnostic::new()
                 .with_pre_text(&format!(
@@ -175,7 +171,233 @@ impl From<&SemanticError> for Diagnostic {
                     span: ident.span.clone(),
                     color: Some(Color::Red),
                 }),
-            other => Diagnostic::new().with_pre_text(&format!("{}: {:?}", error_str, other)),
+            SemanticError::InvalidArgForNonImport {
+                decl_site,
+                call_site,
+                offending_arg,
+            } => Diagnostic::new()
+                .with_pre_text(&format!(
+                    "{}: invalid argument for non-import method \"{}\"",
+                    error_str, decl_site.inner,
+                ))
+                .add_item(DiagnosticItem {
+                    message: "defined here".to_string(),
+                    span: decl_site.span.clone(),
+                    color: Some(Color::Blue),
+                })
+                .add_item(DiagnosticItem {
+                    message: "called here".to_string(),
+                    span: call_site.span.clone(),
+                    color: Some(Color::Blue),
+                })
+                .add_item(DiagnosticItem {
+                    message: "expecting int or bool".to_string(),
+                    span: offending_arg.clone(),
+                    color: Some(Color::Red),
+                }),
+            SemanticError::MismatchedArgCount {
+                decl_site,
+                call_site,
+                expected,
+                found,
+            } => Diagnostic::new()
+                .with_pre_text(&format!("{}: mismatched argument count", error_str))
+                .add_item(DiagnosticItem {
+                    message: format!("expected {}, found {}", expected, found),
+                    span: call_site.span.clone(),
+                    color: Some(Color::Red),
+                })
+                .add_item(DiagnosticItem {
+                    message: "defined here".to_string(),
+                    span: decl_site.span.clone(),
+                    color: Some(Color::Blue),
+                }),
+            SemanticError::MismatchedArgType {
+                param,
+                arg,
+                param_ty,
+                arg_ty,
+            } => Diagnostic::new()
+                .with_pre_text(&format!("{}: mismatched argument type", error_str))
+                .add_item(DiagnosticItem {
+                    message: format!("defined here with type: {}", param_ty),
+                    span: param.span.clone(),
+                    color: Some(Color::Blue),
+                })
+                .add_item(DiagnosticItem {
+                    message: format!("found type: {}", arg_ty),
+                    span: arg.clone(),
+                    color: Some(Color::Red),
+                }),
+            SemanticError::InvalidReturnType {
+                return_ty,
+                expr_ty,
+                method,
+            } => Diagnostic::new()
+                .with_pre_text(&format!("{}: invalid return type", error_str))
+                .add_item(DiagnosticItem {
+                    message: format!("declared return type: {}", return_ty),
+                    span: method.span.clone(),
+                    color: Some(Color::Blue),
+                })
+                .add_item(DiagnosticItem {
+                    message: format!("found type: {}", expr_ty.inner),
+                    span: expr_ty.span.clone(),
+                    color: Some(Color::Red),
+                }),
+            SemanticError::UnknownVar(var) => Diagnostic::new()
+                .with_pre_text(&format!(
+                    "{}: unknown variable \"{}\"",
+                    error_str, var.inner
+                ))
+                .add_item(DiagnosticItem {
+                    message: "undefined variable".to_string(),
+                    span: var.span.clone(),
+                    color: Some(Color::Red),
+                }),
+            SemanticError::UnknownMethod(method) => Diagnostic::new()
+                .with_pre_text(&format!(
+                    "{}: unknown method \"{}\"",
+                    error_str, method.inner
+                ))
+                .add_item(DiagnosticItem {
+                    message: "undefined method".to_string(),
+                    span: method.span.clone(),
+                    color: Some(Color::Red),
+                }),
+            SemanticError::IndexingScalar { ident, ty } => Diagnostic::new()
+                .with_pre_text(&format!(
+                    "{}: indexing a scalar variable \"{}\"",
+                    error_str, ident.inner
+                ))
+                .add_item(DiagnosticItem {
+                    message: format!("type: {}", ty),
+                    span: ident.span.clone(),
+                    color: Some(Color::Red),
+                }),
+            SemanticError::InvalidArrayIndex(ty) => Diagnostic::new()
+                .with_pre_text(&format!("{}: invalid array index", error_str))
+                .add_item(DiagnosticItem {
+                    message: format!("expecting int, found: {}", ty.inner),
+                    span: ty.span.clone(),
+                    color: Some(Color::Red),
+                }),
+            SemanticError::InvalidLen { ident, ty } => Diagnostic::new()
+                .with_pre_text(&format!("{}: invalid len", error_str))
+                .add_item(DiagnosticItem {
+                    message: format!("expecting array, found: {}", ty),
+                    span: ident.span.clone(),
+                    color: Some(Color::Red),
+                }),
+            SemanticError::InvalidCondition(expr) => Diagnostic::new()
+                .with_pre_text(&format!("{}: invalid condition", error_str))
+                .add_item(DiagnosticItem {
+                    message: format!("expecting bool, found: {}", expr.inner),
+                    span: expr.span.clone(),
+                    color: Some(Color::Red),
+                }),
+            SemanticError::InvalidBinOpTypes { op, lhs, rhs } => Diagnostic::new()
+                .with_pre_text(&format!(
+                    "{}: invalid types for binary operation {}",
+                    error_str, op
+                ))
+                .add_item(DiagnosticItem {
+                    message: format!("lhs type: {}", lhs.inner),
+                    span: lhs.span.clone(),
+                    color: Some(Color::Red),
+                })
+                .add_item(DiagnosticItem {
+                    message: format!("rhs type: {}", rhs.inner),
+                    span: rhs.span.clone(),
+                    color: Some(Color::Red),
+                }),
+            SemanticError::InvalidUnaryOpType { op, ty } => Diagnostic::new()
+                .with_pre_text(&format!(
+                    "{}: invalid type for unary operation {}",
+                    error_str, op
+                ))
+                .add_item(DiagnosticItem {
+                    message: format!("type: {}", ty.inner),
+                    span: ty.span.clone(),
+                    color: Some(Color::Red),
+                }),
+            SemanticError::MismatchedAssignmentTypes {
+                rhs_ty,
+                lhs_ty,
+                decl_site,
+            } => Diagnostic::new()
+                .with_pre_text(&format!("{}: mismatched assignment types", error_str))
+                .add_item(DiagnosticItem {
+                    message: format!("declared type: {}", lhs_ty),
+                    span: decl_site.span.clone(),
+                    color: Some(Color::Blue),
+                })
+                .add_item(DiagnosticItem {
+                    message: format!("found type: {}", rhs_ty.inner),
+                    span: rhs_ty.span.clone(),
+                    color: Some(Color::Red),
+                }),
+            SemanticError::NonNumericUpdate(ty) => Diagnostic::new()
+                .with_pre_text(&format!(
+                    "{}: non-numeric update (+=, -=, *=, /=, %=, ++, --)",
+                    error_str
+                ))
+                .add_item(DiagnosticItem {
+                    message: format!("expecting int, found: {}", ty.inner),
+                    span: ty.span.clone(),
+                    color: Some(Color::Red),
+                }),
+            SemanticError::NonScalarAssignment {
+                decl_site,
+                update_site,
+            } => Diagnostic::new()
+                .with_pre_text(&format!("{}: non-scalar assignment", error_str))
+                .add_item(DiagnosticItem {
+                    message: "expecting scalar variable".to_string(),
+                    span: decl_site.span.clone(),
+                    color: Some(Color::Blue),
+                })
+                .add_item(DiagnosticItem {
+                    message: "found non-scalar variable".to_string(),
+                    span: update_site.span.clone(),
+                    color: Some(Color::Red),
+                }),
+            SemanticError::ReassigningConst {
+                decl_site,
+                assign_site,
+            } => Diagnostic::new()
+                .with_pre_text(&format!("{}: reassigning const variable", error_str))
+                .add_item(DiagnosticItem {
+                    message: "const variable".to_string(),
+                    span: decl_site.span.clone(),
+                    color: Some(Color::Blue),
+                })
+                .add_item(DiagnosticItem {
+                    message: "reassigned here".to_string(),
+                    span: assign_site.span.clone(),
+                    color: Some(Color::Red),
+                }),
+            SemanticError::InvalidBreak(span) => Diagnostic::new()
+                .with_pre_text(&format!("{}: invalid break", error_str))
+                .add_item(DiagnosticItem {
+                    message: "break statement outside of loop".to_string(),
+                    span: span.clone(),
+                    color: Some(Color::Red),
+                }),
+            SemanticError::InvalidContinue(span) => Diagnostic::new()
+                .with_pre_text(&format!("{}: invalid continue", error_str))
+                .add_item(DiagnosticItem {
+                    message: "continue statement outside of loop".to_string(),
+                    span: span.clone(),
+                    color: Some(Color::Red),
+                }),
+            SemanticError::InvalidIntLiteral(lit) => Diagnostic::new()
+                .with_pre_text(&format!("{}: invalid int literal", error_str))
+                .add_item(DiagnosticItem {
+                    message: "should be in [-9223372036854775808, 9223372036854775807]".to_string(),
+                    span: lit.span.clone(),
+                    color: Some(Color::Red),
+                }),
         }
     }
 }

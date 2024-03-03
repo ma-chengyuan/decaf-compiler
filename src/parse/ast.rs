@@ -1,4 +1,5 @@
 #![allow(dead_code)]
+use core::fmt;
 use std::rc::Rc;
 
 use num_bigint::BigInt;
@@ -102,11 +103,42 @@ pub enum BinOp {
     Or,
 }
 
+impl fmt::Display for BinOp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            BinOp::Add => "+",
+            BinOp::Sub => "-",
+            BinOp::Mul => "*",
+            BinOp::Div => "/",
+            BinOp::Mod => "%",
+            BinOp::Less => "<",
+            BinOp::LessEqual => "<=",
+            BinOp::Greater => ">",
+            BinOp::GreaterEqual => ">=",
+            BinOp::Equal => "==",
+            BinOp::NotEqual => "!=",
+            BinOp::And => "&&",
+            BinOp::Or => "||",
+        };
+        write!(f, "{}", s)
+    }
+}
+
 /// Unary operators.
 #[derive(Debug, Clone, Copy)]
 pub enum UnaryOp {
     Neg,
     Not,
+}
+
+impl fmt::Display for UnaryOp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            UnaryOp::Neg => "-",
+            UnaryOp::Not => "!",
+        };
+        write!(f, "{}", s)
+    }
 }
 
 /// Runtime type of a value.

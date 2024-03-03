@@ -44,7 +44,7 @@ def main():
             proc = run(legal_file_dir / input_file)
             _, stderr = proc.communicate()
             if proc.returncode == 0:
-                test_case.expected_pass()
+                test_case.expected_pass(stderr.decode("utf-8"))
                 passed_cases += 1
             else:
                 test_case.unexpected_error(stderr.decode("utf-8"))

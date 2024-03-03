@@ -22,11 +22,14 @@ class TestCase:
         self.name = name
         print(f"{self.name}", end=": ")
 
-    def expected_pass(self):
+    def expected_pass(self, stdout: str = ""):
         print(
             " " * (CONSOLE_WIDTH - len(self.name) - 16)
             + f"{Color.GREEN}{Color.BOLD}EXPECTED PASS{Color.END}"
         )
+        if stdout:
+            print("\n".join("    " + s for s in stdout.strip().splitlines()))
+            print("=" * CONSOLE_WIDTH)
 
     def expected_error(self, stderr: str):
         print(

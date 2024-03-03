@@ -140,16 +140,15 @@ impl Diagnostic {
                         None => s.normal(),
                     };
                     // Compute the caret string and the column offset to start the message
-                    let (caret, item_col) = if next_item_depth == 0 || item.message.is_empty() {
-                        (
-                            // Empirically, Rust seems to use ^ for these kinds
-                            // of caret. Not sure if that observation is
-                            // correct.
-                            color(&"^".repeat(caret_length)).bold(),
-                            // Message of the right most item can start just ot
-                            // the right of the caret on the same line
-                            item.span.start().column + caret_length + 1,
-                        )
+                    let caret_char = match item.color {
+                        Some(Color::Red) => '^', // For "error squiggles"
+                        _ => '-',
+                    };
+                    let caret = color(&caret_char.to_string().repeat(caret_length)).bold();
+                    let item_col = if next_item_depth == 0 || item.message.is_empty() {
+                        // Message of the right most item can start just ot
+                        // the right of the caret on the same line
+                        item.span.start().column + caret_length + 1
                     } else {
                         // Message of other non-empty items will need to start
                         // beneath the caret and connect to the caret with a
@@ -157,10 +156,7 @@ impl Diagnostic {
                         for element in elements.iter_mut().take(next_item_depth).skip(1) {
                             element.push((item.span.start().column, color("|").bold()));
                         }
-                        (
-                            color(&"-".repeat(caret_length)).bold(),
-                            item.span.start().column, // The message and the vertical line are left-aligned with the caret (for Rust's diagnostics at least)
-                        )
+                        item.span.start().column // The message and the vertical line are left-aligned with the caret (for Rust's diagnostics at least)
                     };
                     elements[0].push((item.span.start().column, caret));
                     // Same as the computation for total_depth
