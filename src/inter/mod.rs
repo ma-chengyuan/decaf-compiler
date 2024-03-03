@@ -125,6 +125,7 @@ impl IrBuilder {
             .imported_methods
             .get(&*name.inner)
             .or_else(|| self.methods.get(&*name.inner).map(|method| &method.name))
+            .or_else(|| self.global_vars.get(&*name.inner).map(|var| &var.name))
         {
             self.emit_error(SemanticError::DuplicateDecls {
                 first: prev_decl.clone(),
@@ -246,12 +247,12 @@ impl<'a> MethodBuilder<'a> {
 
     fn build_block(&mut self, block: &Block, cur_block: BlockRef) -> BlockRef {
         self.locals.push(HashMap::new());
-        let next_block = self.build_block_(block, cur_block);
+        let next_block = self.build_block_no_new_scope(block, cur_block);
         self.locals.pop();
         next_block
     }
 
-    fn build_block_(&mut self, block: &Block, mut cur_block: BlockRef) -> BlockRef {
+    fn build_block_no_new_scope(&mut self, block: &Block, mut cur_block: BlockRef) -> BlockRef {
         for field_decl in &block.field_decls {
             FieldDeclContext::Local(self, cur_block).check_field_decl(field_decl);
         }
@@ -1032,7 +1033,8 @@ impl<'a> MethodBuilder<'a> {
 
     pub fn build(mut self) -> Method {
         self.method.annotate_block_mut(self.method.entry).str = Some("entry".to_string());
-        self.build_block(&self.method_decl.body, self.method.entry);
+        // Don't introduce a new scope for the method body, will just use the parameter scope.
+        self.build_block_no_new_scope(&self.method_decl.body, self.method.entry);
         self.method
     }
 }
@@ -1053,10 +1055,15 @@ impl FieldDeclContext<'_, '_> {
         }
     }
 
-    fn lookup_local(&self, name: &str) -> Option<&Var> {
+    /// Look up an identifier in the current scope.
+    fn lookup_local(&self, name: &str) -> Option<&Ident> {
         match self {
-            Self::Global(builder) => builder.lookup(name),
-            Self::Local(builder, _) => builder.lookup_local(name),
+            Self::Global(builder) => builder
+                .lookup(name)
+                .map(|pair| &pair.name)
+                .or_else(|| builder.imported_methods.get(name))
+                .or_else(|| builder.methods.get(name).map(|m| &m.name)),
+            Self::Local(builder, _) => builder.lookup_local(name).map(|ident| &ident.name),
         }
     }
 
@@ -1085,7 +1092,7 @@ impl FieldDeclContext<'_, '_> {
             // Decaf forbids redeclaration of variables in the same scope.
             if let Some(prev_decl) = self.lookup_local(&name.inner) {
                 self.emit_error(SemanticError::DuplicateDecls {
-                    first: prev_decl.name.clone(),
+                    first: prev_decl.clone(),
                     second: name.clone(),
                 });
                 continue;
