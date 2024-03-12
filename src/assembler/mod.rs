@@ -17,13 +17,13 @@ impl Assembler {
 
     pub fn assemble(&self) -> String {
         let mut output = String::new();
-        output.push_str("; Globals\n");
+        output.push_str("# Globals\n");
         output.push_str(".data\n");
         for global in self.program.globals.values() {
             let global_code = self.assemble_global(global);
             output.push_str(global_code.as_str());
         }
-        output.push_str("\nn; Methods\n");
+        output.push_str("\n# Methods\n");
         output.push_str(".text\n");
         output.push_str(".globl main\n");
         for method in self.program.methods.values() {
@@ -144,7 +144,7 @@ impl Assembler {
                 }
                 Inst::Neg(var) | Inst::Not(var) => {
                     output.push_str(
-                        format!("    movq {}, %rax\n", get_inst_ref_location(var)).as_str(),
+                        format!("    movq {}, %rax\n", get_inst_ref_location(*var)).as_str(),
                     );
                     output.push_str(
                         format!(
@@ -158,51 +158,51 @@ impl Assembler {
                         .as_str(),
                     );
                     output.push_str(
-                        format!("    movq %rax, {}\n", get_inst_ref_location(&inst_ref)).as_str(),
+                        format!("    movq %rax, {}\n", get_inst_ref_location(inst_ref)).as_str(),
                     );
                 }
                 Inst::Eq(lhs, rhs) => {
                     output.push_str(
-                        format!("    cmpq {}, {}\n", get_inst_ref_location(lhs), get_inst_ref_location(rhs)).as_str(),
+                        format!("    cmpq {}, {}\n", get_inst_ref_location(*lhs), get_inst_ref_location(*rhs)).as_str(),
                     );
                     output.push_str(
                         format!("    sete %al\n").as_str(),
                     );
                     output.push_str(
-                        format!("    movzbq %al, {}\n", get_inst_ref_location(&inst_ref)).as_str(),
+                        format!("    movzbq %al, {}\n", get_inst_ref_location(inst_ref)).as_str(),
                     );
                 }
                 Inst::Neq(lhs, rhs) => {
                     output.push_str(
-                        format!("    cmpq {}, {}\n", get_inst_ref_location(lhs), get_inst_ref_location(rhs)).as_str(),
+                        format!("    cmpq {}, {}\n", get_inst_ref_location(*lhs), get_inst_ref_location(*rhs)).as_str(),
                     );
                     output.push_str(
                         format!("    setne %al\n").as_str(),
                     );
                     output.push_str(
-                        format!("    movzbq %al, {}\n", get_inst_ref_location(&inst_ref)).as_str(),
+                        format!("    movzbq %al, {}\n", get_inst_ref_location(inst_ref)).as_str(),
                     );
                 }
                 Inst::Less(lhs, rhs) => {
                     output.push_str(
-                        format!("    cmpq {}, {}\n", get_inst_ref_location(lhs), get_inst_ref_location(rhs)).as_str(),
+                        format!("    cmpq {}, {}\n", get_inst_ref_location(*lhs), get_inst_ref_location(*rhs)).as_str(),
                     );
                     output.push_str(
                         format!("    setl %al\n").as_str(),
                     );
                     output.push_str(
-                        format!("    movzbq %al, {}\n", get_inst_ref_location(&inst_ref)).as_str(),
+                        format!("    movzbq %al, {}\n", get_inst_ref_location(inst_ref)).as_str(),
                     );
                 }
                 Inst::LessEq(lhs, rhs) => {
                     output.push_str(
-                        format!("    cmpq {}, {}\n", get_inst_ref_location(lhs), get_inst_ref_location(rhs)).as_str(),
+                        format!("    cmpq {}, {}\n", get_inst_ref_location(*lhs), get_inst_ref_location(*rhs)).as_str(),
                     );
                     output.push_str(
                         format!("    setle %al\n").as_str(),
                     );
                     output.push_str(
-                        format!("    movzbq %al, {}\n", get_inst_ref_location(&inst_ref)).as_str(),
+                        format!("    movzbq %al, {}\n", get_inst_ref_location(inst_ref)).as_str(),
                     );
                 }
                 Inst::LoadConst(value) => {
@@ -210,16 +210,16 @@ impl Assembler {
                         Const::Int(v) => {
                             if *v <= i32::MAX as i64 && *v >= i32::MIN as i64 {
                                 // Value fits within 32 bits, use movq
-                                output.push_str(format!("    movq ${}, {}\n", v, get_inst_ref_location(&inst_ref)).as_str());
+                                output.push_str(format!("    movq ${}, {}\n", v, get_inst_ref_location(inst_ref)).as_str());
                             } else {
                                 // Value requires more than 32 bits, use movabsq
-                                output.push_str(format!("    movabsq ${}, {}\n", v, get_inst_ref_location(&inst_ref)).as_str());
+                                output.push_str(format!("    movabsq ${}, {}\n", v, get_inst_ref_location(inst_ref)).as_str());
                             }
                         },
                         Const::Bool(b) => {
                             // Boolean values always fit within 32 bits
                             let val = if *b { 1 } else { 0 };
-                            output.push_str(format!("    movq ${}, {}\n", val, get_inst_ref_location(&inst_ref)).as_str());
+                            output.push_str(format!("    movq ${}, {}\n", val, get_inst_ref_location(inst_ref)).as_str());
                         },
                         _ => unreachable!(),
                     }
@@ -234,7 +234,7 @@ impl Assembler {
                         output.push_str(
                             format!(
                                 "    movq {}, %{}\n",
-                                get_inst_ref_location(arg_ref),
+                                get_inst_ref_location(*arg_ref),
                                 arg_registers[arg_idx]
                             )
                             .as_str(),
@@ -249,7 +249,7 @@ impl Assembler {
                     }
                     for arg_ref in args.iter().skip(6).rev() {
                         output.push_str(
-                            format!("    pushq {}\n", get_inst_ref_location(arg_ref)).as_str(),
+                            format!("    pushq {}\n", get_inst_ref_location(*arg_ref)).as_str(),
                         );
                         stack_space_for_args += 8;
                     }
@@ -259,7 +259,7 @@ impl Assembler {
                             format!("    addq ${}, %rsp\n", stack_space_for_args).as_str(),
                         );
                     }
-                    let tmp = get_inst_ref_location(&inst_ref);
+                    let tmp = get_inst_ref_location(inst_ref);
                     output.push_str(format!("    movq %rax, {}\n", tmp).as_str());
                 }
                 _ => todo!(),

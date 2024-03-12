@@ -17,4 +17,5 @@ Cargo.lock
 .vscode/
 
 /*.dcf
+/*.S
 __pycache__/
