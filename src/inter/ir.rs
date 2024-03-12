@@ -239,9 +239,9 @@ pub struct Block {
 #[derive(Debug, Clone)]
 pub struct StackSlot {
     /// The type of data in stack slot. Needed to determine the size of the slot.
-    ty: Type,
+    pub ty: Type,
     /// The name of the stack slot. This is used for debugging purposes.
-    name: Ident,
+    pub name: Ident,
 }
 
 #[derive(Debug, Clone)]
@@ -337,6 +337,66 @@ impl Method {
             }
         }
         panic!("instruction not found in any block");
+    }
+
+    pub fn iter_slack_slots(&self) -> SlackSlotIter {
+        SlackSlotIter {
+            method: self,
+            iter: self.stack_slots.iter().enumerate(),
+        }
+    }
+
+    pub fn iter_insts(&self) -> InstIter {
+        InstIter {
+            method: self,
+            iter: self.insts.iter().enumerate(),
+        }
+    }
+
+    pub fn iter_blocks(&self) -> BlockIter {
+        BlockIter {
+            method: self,
+            iter: self.blocks.iter().enumerate(),
+        }
+    }
+}
+
+pub struct SlackSlotIter<'a> {
+    method: &'a Method,
+    iter: std::iter::Enumerate<std::slice::Iter<'a, StackSlot>>,
+}
+
+impl<'a> Iterator for SlackSlotIter<'a> {
+    type Item = (StackSlotRef, &'a StackSlot);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.iter.next().map(|(i, slot)| (StackSlotRef(i), slot))
+    }
+}
+
+pub struct InstIter<'a> {
+    method: &'a Method,
+    iter: std::iter::Enumerate<std::slice::Iter<'a, Inst>>,
+}
+
+impl<'a> Iterator for InstIter<'a> {
+    type Item = (InstRef, &'a Inst);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.iter.next().map(|(i, inst)| (InstRef(i), inst))
+    }
+}
+
+pub struct BlockIter<'a> {
+    method: &'a Method,
+    iter: std::iter::Enumerate<std::slice::Iter<'a, Block>>,
+}
+
+impl<'a> Iterator for BlockIter<'a> {
+    type Item = (BlockRef, &'a Block);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.iter.next().map(|(i, block)| (BlockRef(i), block))
     }
 }
 

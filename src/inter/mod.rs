@@ -1,12 +1,12 @@
 #![allow(dead_code)]
 //! IR
 
-use std::collections::HashMap;
+use std::{collections::HashMap, rc::Rc};
 
 use num_traits::ToPrimitive;
 
 use crate::{
-    inter::{ir::Inst, types::PrimitiveType},
+    inter::{ir::{Inst}, types::PrimitiveType},
     parse::ast::{
         self, BinOp, Block, Expr, FieldDecl, FieldDeclarator, Ident, Location, MethodCall,
         MethodCallArg, MethodDecl, RuntimeLiteral, Stmt, UnaryOp, UpdateOp,
@@ -586,22 +586,38 @@ impl<'a> MethodBuilder<'a> {
                     _ => {
                         let true_block = self.method.next_block();
                         let false_block = self.method.next_block();
+                        let intermediate_stack_slot = self.method.next_stack_slot(
+                            Type::Primitive(PrimitiveType::Bool), 
+                            Spanned {
+                                inner: Rc::from(expr.span.source_str().as_ref()),
+                                span: expr.span.clone(),
+                            }
+                        );
                         self.build_cond(expr, cur_block, true_block, false_block);
                         let true_inst = self
                             .method
                             .next_inst(true_block, Inst::LoadConst(Const::Bool(true)));
+                        let _ = self.method.next_inst(true_block, Inst::Store {
+                            addr: Address::Local(intermediate_stack_slot),
+                            value: true_inst,
+                        });
                         let false_inst = self
                             .method
                             .next_inst(false_block, Inst::LoadConst(Const::Bool(false)));
                         let next_block = self.method.next_block();
+                        let _ = self.method.next_inst(false_block, Inst::Store {
+                            addr: Address::Local(intermediate_stack_slot),
+                            value: false_inst,
+                        });
                         self.method.block_mut(true_block).term = Terminator::Jump(next_block);
                         self.method.block_mut(false_block).term = Terminator::Jump(next_block);
-                        let phi_inst = Inst::Phi(HashMap::from([
-                            (true_block, true_inst),
-                            (false_block, false_inst),
-                        ]));
-                        let phi_inst = self.method.next_inst(next_block, phi_inst);
-                        (next_block, phi_inst, Type::bool())
+                        // let phi_inst = Inst::Phi(HashMap::from([
+                        //     (true_block, true_inst),
+                        //     (false_block, false_inst),
+                        // ]));
+                        // let phi_inst = self.method.next_inst(next_block, phi_inst);
+                        let load_inst = self.method.next_inst(next_block, Inst::Load(Address::Local(intermediate_stack_slot)));
+                        (next_block, load_inst, Type::bool())
                     }
                 }
             }

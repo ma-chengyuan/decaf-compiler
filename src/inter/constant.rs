@@ -8,7 +8,7 @@ use crate::parse::ast::{Initializer, RuntimeLiteral};
 
 use super::{
     error::SemanticError,
-    types::{PrimitiveType, Type},
+    types::{PrimitiveType, Type, INT_SIZE, BOOL_SIZE},
 };
 
 /// A constant value in the intermediate representation.
@@ -83,6 +83,14 @@ impl Const {
             }
             Type::Invalid => Self::Int(0), // This is not a valid type, but we need to return something.
             Type::Void => unreachable!(),
+        }
+    }
+
+    pub fn size(&self) -> usize {
+        match self {
+            Const::Int(_) => INT_SIZE,
+            Const::Bool(_) => BOOL_SIZE,
+            Const::Array(arr) => arr.iter().map(Self::size).sum(),
         }
     }
 }

@@ -50,6 +50,9 @@ impl fmt::Display for Type {
     }
 }
 
+pub const INT_SIZE: usize = 8;
+pub const BOOL_SIZE: usize = 8;
+
 impl Type {
     pub const fn int() -> Self {
         Self::Primitive(PrimitiveType::Int)
@@ -57,6 +60,15 @@ impl Type {
 
     pub const fn bool() -> Self {
         Self::Primitive(PrimitiveType::Bool)
+    }
+
+    pub fn size(&self) -> usize {
+        match self {
+            Type::Primitive(PrimitiveType::Int) => INT_SIZE,
+            Type::Primitive(PrimitiveType::Bool) => BOOL_SIZE, // 8 bytes for alignment
+            Type::Array { base, length } => base.size() * length,
+            _ => 0,
+        }
     }
 
     pub fn from_ast_literal(lit: &RuntimeLiteral) -> Self {
