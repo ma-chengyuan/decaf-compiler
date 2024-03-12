@@ -266,6 +266,18 @@ impl Assembler {
             }
         }
 
+        if method.name.inner.as_ref() == "main" {
+            // return 0;
+            output.push_str("    movq $0, %rax\n");
+        }
+
+        // Restore all callee-saved registers
+        for reg in ["rbx", "rbp", "r12", "r13", "r14", "r15"].iter().rev() {
+            output.push_str(format!("    popq %{}\n", reg).as_str());
+        }
+        // Restore stack frame
+        output.push_str(format!("    leave\n").as_str());
+
         output.push_str("ret\n");
         output
     }
