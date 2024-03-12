@@ -1,10 +1,12 @@
 use std::{path::Path, rc::Rc};
 
+mod assembler;
 mod inter;
 mod parse;
 mod scan;
 mod utils;
 
+use assembler::Assembler;
 use inter::IrBuilder;
 use parse::parser::Parser;
 use scan::{error::ScannerError, location::Spanned, scanner::Scanner, token::Token};
@@ -31,17 +33,15 @@ fn main() {
     }
 
     // Use writeln!(writer, "template string") to write to stdout ot file.
-    let _writer = get_writer(&args.output);
+    let writer = get_writer(&args.output);
     match args.target {
         utils::cli::CompilerAction::Default => {
             panic!("Invalid target");
         }
-        utils::cli::CompilerAction::Scan => main_scan(args, _writer),
-        utils::cli::CompilerAction::Parse => main_parse(args, _writer),
-        utils::cli::CompilerAction::Inter => main_inter(args, _writer),
-        utils::cli::CompilerAction::Assembly => {
-            todo!("assembly");
-        }
+        utils::cli::CompilerAction::Scan => main_scan(args, writer),
+        utils::cli::CompilerAction::Parse => main_parse(args, writer),
+        utils::cli::CompilerAction::Inter => main_inter(args, writer),
+        utils::cli::CompilerAction::Assembly => main_assembler(args, writer),
     }
 }
 
@@ -107,6 +107,27 @@ fn main_inter(args: utils::cli::Args, mut writer: Box<dyn std::io::Write>) {
         Ok(program) => writeln!(writer, "{}", program).unwrap(),
         Err(errors) => dump_errors_and_exit(errors),
     }
+}
+
+fn main_assembler(args: utils::cli::Args, mut writer: Box<dyn std::io::Write>) {
+    // TODO: Deduplicate
+    let (tokens, errors) = scan(args.input);
+    dump_errors_and_exit(errors);
+    let mut parser = Parser::new(tokens);
+    let (ast, errors) = parser.parse_program();
+    dump_errors_and_exit(errors);
+    let mut checker = IrBuilder::new();
+    let res = checker.check_program(&ast);
+    let program = match res {
+        Ok(program) => program,
+        Err(errors) => {
+            dump_errors_and_exit(errors);
+            unreachable!()
+        }
+    };
+    let assembler = Assembler::new(program);
+    let res = assembler.assemble();
+    writeln!(writer, "{}", res).unwrap();
 }
 
 fn dump_errors_and_exit<T>(errors: Vec<T>)

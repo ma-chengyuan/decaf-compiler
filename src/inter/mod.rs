@@ -21,10 +21,10 @@ use self::{
     types::Type,
 };
 
-mod constant;
-mod error;
-mod ir;
-mod types;
+pub mod constant;
+pub mod error;
+pub mod ir;
+pub mod types;
 
 #[derive(Debug, Clone)]
 struct Var {
