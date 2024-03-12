@@ -162,7 +162,50 @@ impl Assembler {
                         format!("    movq %rax, {}\n", get_inst_ref_location(&inst_ref)).as_str(),
                     );
                 }
-                Inst::Eq(lhs, rhs) => {}
+                Inst::Eq(lhs, rhs) => {
+                    output.push_str(
+                        format!("    cmpq {}, {}\n", get_inst_ref_location(lhs), get_inst_ref_location(rhs)).as_str(),
+                    );
+                    output.push_str(
+                        format!("    sete %al\n").as_str(),
+                    );
+                    output.push_str(
+                        format!("    movzbq %al, {}\n", get_inst_ref_location(&inst_ref)).as_str(),
+                    );
+                }
+                Inst::Neq(lhs, rhs) => {
+                    output.push_str(
+                        format!("    cmpq {}, {}\n", get_inst_ref_location(lhs), get_inst_ref_location(rhs)).as_str(),
+                    );
+                    output.push_str(
+                        format!("    setne %al\n").as_str(),
+                    );
+                    output.push_str(
+                        format!("    movzbq %al, {}\n", get_inst_ref_location(&inst_ref)).as_str(),
+                    );
+                }
+                Inst::Less(lhs, rhs) => {
+                    output.push_str(
+                        format!("    cmpq {}, {}\n", get_inst_ref_location(lhs), get_inst_ref_location(rhs)).as_str(),
+                    );
+                    output.push_str(
+                        format!("    setl %al\n").as_str(),
+                    );
+                    output.push_str(
+                        format!("    movzbq %al, {}\n", get_inst_ref_location(&inst_ref)).as_str(),
+                    );
+                }
+                Inst::LessEq(lhs, rhs) => {
+                    output.push_str(
+                        format!("    cmpq {}, {}\n", get_inst_ref_location(lhs), get_inst_ref_location(rhs)).as_str(),
+                    );
+                    output.push_str(
+                        format!("    setle %al\n").as_str(),
+                    );
+                    output.push_str(
+                        format!("    movzbq %al, {}\n", get_inst_ref_location(&inst_ref)).as_str(),
+                    );
+                }
 
                 Inst::Call {
                     method: callee_name,
