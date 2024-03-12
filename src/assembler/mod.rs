@@ -161,7 +161,69 @@ impl Assembler {
                         format!("    movq %rax, {}\n", get_inst_ref_location(&inst_ref)).as_str(),
                     );
                 }
-                Inst::Eq(lhs, rhs) => {}
+                Inst::Eq(lhs, rhs) => {
+                    output.push_str(
+                        format!("    cmpq {}, {}\n", get_inst_ref_location(lhs), get_inst_ref_location(rhs)).as_str(),
+                    );
+                    output.push_str(
+                        format!("    sete %al\n").as_str(),
+                    );
+                    output.push_str(
+                        format!("    movzbq %al, {}\n", get_inst_ref_location(&inst_ref)).as_str(),
+                    );
+                }
+                Inst::Neq(lhs, rhs) => {
+                    output.push_str(
+                        format!("    cmpq {}, {}\n", get_inst_ref_location(lhs), get_inst_ref_location(rhs)).as_str(),
+                    );
+                    output.push_str(
+                        format!("    setne %al\n").as_str(),
+                    );
+                    output.push_str(
+                        format!("    movzbq %al, {}\n", get_inst_ref_location(&inst_ref)).as_str(),
+                    );
+                }
+                Inst::Less(lhs, rhs) => {
+                    output.push_str(
+                        format!("    cmpq {}, {}\n", get_inst_ref_location(lhs), get_inst_ref_location(rhs)).as_str(),
+                    );
+                    output.push_str(
+                        format!("    setl %al\n").as_str(),
+                    );
+                    output.push_str(
+                        format!("    movzbq %al, {}\n", get_inst_ref_location(&inst_ref)).as_str(),
+                    );
+                }
+                Inst::LessEq(lhs, rhs) => {
+                    output.push_str(
+                        format!("    cmpq {}, {}\n", get_inst_ref_location(lhs), get_inst_ref_location(rhs)).as_str(),
+                    );
+                    output.push_str(
+                        format!("    setle %al\n").as_str(),
+                    );
+                    output.push_str(
+                        format!("    movzbq %al, {}\n", get_inst_ref_location(&inst_ref)).as_str(),
+                    );
+                }
+                Inst::LoadConst(value) => {
+                    match value {
+                        Const::Int(v) => {
+                            if *v <= i32::MAX as i64 && *v >= i32::MIN as i64 {
+                                // Value fits within 32 bits, use movq
+                                output.push_str(format!("    movq ${}, {}\n", v, get_inst_ref_location(&inst_ref)).as_str());
+                            } else {
+                                // Value requires more than 32 bits, use movabsq
+                                output.push_str(format!("    movabsq ${}, {}\n", v, get_inst_ref_location(&inst_ref)).as_str());
+                            }
+                        },
+                        Const::Bool(b) => {
+                            // Boolean values always fit within 32 bits
+                            let val = if *b { 1 } else { 0 };
+                            output.push_str(format!("    movq ${}, {}\n", val, get_inst_ref_location(&inst_ref)).as_str());
+                        },
+                        _ => unreachable!(),
+                    }
+                }
 
                 Inst::Call {
                     method: callee_name,
