@@ -206,6 +206,25 @@ impl Assembler {
                         format!("    movzbq %al, {}\n", get_inst_ref_location(&inst_ref)).as_str(),
                     );
                 }
+                Inst::LoadConst(value) => {
+                    match value {
+                        Const::Int(v) => {
+                            if *v <= i32::MAX as i64 && *v >= i32::MIN as i64 {
+                                // Value fits within 32 bits, use movq
+                                output.push_str(format!("    movq ${}, {}\n", v, get_inst_ref_location(&inst_ref)).as_str());
+                            } else {
+                                // Value requires more than 32 bits, use movabsq
+                                output.push_str(format!("    movabsq ${}, {}\n", v, get_inst_ref_location(&inst_ref)).as_str());
+                            }
+                        },
+                        Const::Bool(b) => {
+                            // Boolean values always fit within 32 bits
+                            let val = if *b { 1 } else { 0 };
+                            output.push_str(format!("    movq ${}, {}\n", val, get_inst_ref_location(&inst_ref)).as_str());
+                        },
+                        _ => unreachable!(),
+                    }
+                }
 
                 Inst::Call {
                     method: callee_name,
