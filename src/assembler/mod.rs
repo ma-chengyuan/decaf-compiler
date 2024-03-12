@@ -98,10 +98,9 @@ impl Assembler {
 
         // for (block_idx, bloc)
 
-        let get_inst_ref_location = |iref| format!("{}(%rbp)", inst_to_offset[iref]);
+        let get_inst_ref_location = |iref: InstRef| format!("{}(%rbp)", inst_to_offset[&iref]);
 
         for (inst_ref, inst) in method.iter_insts() {
-            let ins_offset = inst_to_offset[&inst_ref];
             match inst {
                 Inst::Add(lhs, rhs) | Inst::Sub(lhs, rhs) | Inst::Mul(lhs, rhs) => {
                     let inst_name = match inst {
@@ -111,22 +110,22 @@ impl Assembler {
                         _ => unreachable!(),
                     };
                     output.push_str(
-                        format!("    movq {}, %rax\n", get_inst_ref_location(lhs)).as_str(),
+                        format!("    movq {}, %rax\n", get_inst_ref_location(*lhs)).as_str(),
                     );
                     output.push_str(
-                        format!("    {}q {}, %rax\n", inst_name, get_inst_ref_location(rhs))
+                        format!("    {}q {}, %rax\n", inst_name, get_inst_ref_location(*rhs))
                             .as_str(),
                     );
                     output.push_str(
-                        format!("    movq %rax, {}\n", get_inst_ref_location(&inst_ref)).as_str(),
+                        format!("    movq %rax, {}\n", get_inst_ref_location(inst_ref)).as_str(),
                     );
                 }
                 Inst::Div(lhs, rhs) | Inst::Mod(lhs, rhs) => {
                     output.push_str(
-                        format!("    movq {}, %rax\n", get_inst_ref_location(lhs)).as_str(),
+                        format!("    movq {}, %rax\n", get_inst_ref_location(*lhs)).as_str(),
                     );
                     output.push_str(format!("    cqto\n").as_str()); // Godbolt does it
-                    output.push_str(format!("    idivq {}\n", get_inst_ref_location(rhs)).as_str());
+                    output.push_str(format!("    idivq {}\n", get_inst_ref_location(*rhs)).as_str());
 
                     // Behavior depends on whether div or mod
 
@@ -138,7 +137,7 @@ impl Assembler {
                                 Inst::Mod(_, _) => "rdx",
                                 _ => unreachable!(),
                             },
-                            get_inst_ref_location(&inst_ref)
+                            get_inst_ref_location(inst_ref)
                         )
                         .as_str(),
                     );
@@ -169,17 +168,37 @@ impl Assembler {
                     args,
                 } => {
                     let arg_registers = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"];
-                    for (arg_idx, arg_ref) in args.iter().enumerate() {
+                    for (arg_idx, arg_ref) in args.iter().enumerate().take(6) {
                         output.push_str(
                             format!(
-                                "    movq {}, {}\n",
+                                "    movq {}, %{}\n",
                                 get_inst_ref_location(arg_ref),
                                 arg_registers[arg_idx]
                             )
                             .as_str(),
                         );
                     }
+                    let n_remaining_args = args.len().saturating_sub(6);
+                    let mut stack_space_for_args = 0;
+                    if n_remaining_args % 2 == 1 {
+                        // Align stack to 16 bytes
+                        output.push_str("    subq $8, %rsp\n");
+                        stack_space_for_args += 8;
+                    }
+                    for arg_ref in args.iter().skip(6).rev() {
+                        output.push_str(
+                            format!("    pushq {}\n", get_inst_ref_location(arg_ref)).as_str(),
+                        );
+                        stack_space_for_args += 8;
+                    }
                     output.push_str(format!("    call {}", callee_name).as_str());
+                    if stack_space_for_args > 0 {
+                        output.push_str(
+                            format!("    addq ${}, %rsp\n", stack_space_for_args).as_str(),
+                        );
+                    }
+                    let tmp = get_inst_ref_location(&inst_ref);
+                    output.push_str(format!("    movq %rax, {}\n", tmp).as_str());
                 }
                 _ => todo!(),
             }
@@ -205,15 +224,15 @@ impl Assembler {
                 };
                 output.push_str(format!("   .quad {}\n", if val { "1" } else { "0" }).as_str());
             }
-            Type::Array { base, length } => {
+            Type::Array { ref base, length } => {
                 let Const::Array(ref val) = var.init else {
                     unreachable!();
                 };
                 for value in val.iter() {
                     let outval: i64 = match value {
-                        Const::Int(v) => v,
+                        Const::Int(v) => *v,
                         Const::Bool(b) => {
-                            if b {
+                            if *b {
                                 1i64
                             } else {
                                 0i64
