@@ -359,6 +359,20 @@ impl Assembler {
                     }
                     self.emit_code(format!("movq %rax, {}", get_inst_ref_location(inst_ref)));
                 }
+                Inst::Store { addr, value } => {
+                    self.emit_code(format!("movq {}, %rax", get_inst_ref_location(*value)));
+                    match addr {
+                        Address::Global(name) => {
+                            self.emit_code(format!("movq %rax, {}(%rip)", name));
+                        }
+                        Address::Local(stack_slot) => {
+                            self.emit_code(format!(
+                                "movq %rax, {}(%rbp)",
+                                stack_slot_to_offset[stack_slot]
+                            ));
+                        }
+                    }
+                }
                 x => todo!("{:?}", x),
             }
         }
