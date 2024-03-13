@@ -308,16 +308,25 @@ impl Assembler {
                         }
                     }
                 }
-                Inst::Initialize { stack_slot, value } => {
-                    let Const::Array(arr_vals) = value else {
-                        unreachable!()
-                    };
-                    let mut stack_slot = stack_slot_to_offset[stack_slot] - value.size() as i64;
-                    for val in arr_vals.iter() {
-                        self.load_int_or_bool_const(val, &format!("{}(%rbp)", stack_slot));
-                        stack_slot += val.size() as i64;
+                Inst::Initialize { stack_slot, value } => match value {
+                    // todo: figure out if i'm supposed to subtract value.size() or not
+                    Const::Int(_) | Const::Bool(_) => {
+                        self.load_int_or_bool_const(
+                            value,
+                            &format!(
+                                "{}(%rbp)",
+                                stack_slot_to_offset[stack_slot] - value.size() as i64
+                            ),
+                        );
                     }
-                }
+                    Const::Array(arr_vals) => {
+                        let mut stack_slot = stack_slot_to_offset[stack_slot] - value.size() as i64;
+                        for val in arr_vals.iter() {
+                            self.load_int_or_bool_const(val, &format!("{}(%rbp)", stack_slot));
+                            stack_slot += val.size() as i64;
+                        }
+                    }
+                },
                 x => todo!("{:?}", x),
             }
         }
