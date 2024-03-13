@@ -1,9 +1,9 @@
-use std::{collections::HashMap, fmt::format};
+use std::collections::HashMap;
 
 use crate::inter::{
     constant::Const,
     ir::{Address, GlobalVar, Inst, InstRef, Method, Program, StackSlotRef},
-    types::{PrimitiveType, Type, BOOL_SIZE, INT_SIZE},
+    types::{Type, BOOL_SIZE, INT_SIZE},
 };
 
 pub struct Assembler {
@@ -135,8 +135,6 @@ impl Assembler {
             self.emit_code(format!("pushq %{}", reg));
         }
 
-        // for (block_idx, bloc)
-
         let get_inst_ref_location = |iref: InstRef| format!("{}(%rbp)", inst_to_offset[&iref]);
 
         for (inst_ref, inst) in method.iter_insts() {
@@ -221,35 +219,7 @@ impl Assembler {
                     self.emit_code(format!("movzbq %al, {}", get_inst_ref_location(inst_ref)));
                 }
                 Inst::LoadConst(value) => {
-                    match value {
-                        Const::Int(v) => {
-                            if *v <= i32::MAX as i64 && *v >= i32::MIN as i64 {
-                                // Value fits within 32 bits, use movq
-                                self.emit_code(format!(
-                                    "movq ${}, {}",
-                                    v,
-                                    get_inst_ref_location(inst_ref)
-                                ));
-                            } else {
-                                // Value requires more than 32 bits, use movabsq
-                                self.emit_code(format!(
-                                    "movabsq ${}, {}",
-                                    v,
-                                    get_inst_ref_location(inst_ref)
-                                ));
-                            }
-                        }
-                        Const::Bool(b) => {
-                            // Boolean values always fit within 32 bits
-                            let val = if *b { 1 } else { 0 };
-                            self.emit_code(format!(
-                                "movq ${}, {}",
-                                val,
-                                get_inst_ref_location(inst_ref)
-                            ));
-                        }
-                        _ => unreachable!(),
-                    }
+                    self.load_int_or_bool_const(value, &get_inst_ref_location(inst_ref));
                 }
 
                 Inst::Call {
@@ -338,7 +308,17 @@ impl Assembler {
                         }
                     }
                 }
-                _ => todo!(),
+                Inst::Initialize { stack_slot, value } => {
+                    let Const::Array(arr_vals) = value else {
+                        unreachable!()
+                    };
+                    let mut stack_slot = stack_slot_to_offset[stack_slot] - value.size() as i64;
+                    for val in arr_vals.iter() {
+                        self.load_int_or_bool_const(val, &format!("{}(%rbp)", stack_slot));
+                        stack_slot += val.size() as i64;
+                    }
+                }
+                x => todo!("{:?}", x),
             }
         }
 
@@ -381,6 +361,26 @@ impl Assembler {
                     self.emit_const_data(v);
                 }
             }
+        }
+    }
+
+    fn load_int_or_bool_const(&mut self, c: &Const, dst: &str) {
+        match c {
+            Const::Int(v) => {
+                if *v <= i32::MAX as i64 && *v >= i32::MIN as i64 {
+                    // Value fits within 32 bits, use movq
+                    self.emit_code(format!("movq ${}, {}", v, dst));
+                } else {
+                    // Value requires more than 32 bits, use movabsq
+                    self.emit_code(format!("movabsq ${}, {}", v, dst));
+                }
+            }
+            Const::Bool(b) => {
+                // Boolean values always fit within 32 bits
+                let val = if *b { 1 } else { 0 };
+                self.emit_code(format!("movq ${}, {}", val, dst));
+            }
+            _ => unreachable!(),
         }
     }
 
