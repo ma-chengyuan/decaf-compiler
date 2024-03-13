@@ -10,37 +10,53 @@ pub struct Assembler {
     program: Program,
     // corresponds to .data
     data: Vec<String>,
+    // corresponds to .text
+    code: Vec<String>,
 }
 
 impl Assembler {
     pub fn new(program: Program) -> Self {
-        Self { program, data: Vec::new() }
+        Self { program, data: Vec::new(), code: Vec::new() }
+    }
+
+    /// Emit a line of assembly to the data section
+    fn emit_data(&mut self, data: String) {
+        self.data.push(data + "\n");
+    }
+
+    /// Emit a line of assembly to the code section
+    fn emit_code(&mut self, code: String) {
+        self.code.push(code + "\n");
     }
 
     pub fn assemble(&mut self) -> String {
-        let mut output = String::new();
-        for global in self.program.globals.values() {
-            let global_code = self.assemble_global(global);
-            self.data.push(global_code);
+        // todo: remove the .clone()
+        for global in self.program.globals.clone().values() {
+            self.assemble_global(global);
         }
 
-        output.push_str(".text\n");
-        output.push_str(".globl main\n");
         // todo: remove the .clone()
         for method in self.program.methods.clone().values() {
-            let method_code = self.assemble_method(method);
-            output.push_str(method_code.as_str());
+            self.assemble_method(method);
         }
 
-        let mut data_output = String::from(".data\n");
+
+        let mut output = String::from(".data\n");
         for data in self.data.iter() {
-            data_output.push_str(data.as_str());
-            data_output.push('\n');
+            output.push_str(data.as_str());
+            output.push('\n');
         }
-        data_output + "\n" + output.as_str()
+        output.push('\n');
+        output.push_str(".text\n");
+        output.push_str(".globl main\n");
+        for code in self.code.iter() {
+            output.push_str(code.as_str());
+            output.push('\n');
+        }
+        output
     }
 
-    fn assemble_method(&mut self, method: &Method) -> String {
+    fn assemble_method(&mut self, method: &Method) {
         let mut output = format!("{}:\n", method.name.inner);
 
         // Compute stack spacesl
@@ -294,11 +310,12 @@ impl Assembler {
         // Restore stack frame
         output.push_str(format!("    leave\n").as_str());
 
-        output.push_str("ret\n");
-        output
+        output.push_str("ret");
+        
+        self.emit_code(output);
     }
 
-    fn assemble_global(&self, var: &GlobalVar) -> String {
+    fn assemble_global(&mut self, var: &GlobalVar) {
         let mut output = format!("{}:\n", var.name.inner);
         match var.ty {
             Type::Void => unreachable!(),
@@ -336,6 +353,6 @@ impl Assembler {
             Type::Invalid => unreachable!(),
         }
         output.push_str("    .align 16");
-        output
+        self.emit_data(output);
     }
 }
