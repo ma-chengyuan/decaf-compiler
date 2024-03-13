@@ -125,7 +125,7 @@ fn main_assembler(args: utils::cli::Args, mut writer: Box<dyn std::io::Write>) {
             unreachable!()
         }
     };
-    let assembler = Assembler::new(program);
+    let mut assembler = Assembler::new(program);
     let res = assembler.assemble();
     writeln!(writer, "{}", res).unwrap();
 }

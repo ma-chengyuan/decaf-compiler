@@ -8,32 +8,39 @@ use crate::inter::{
 
 pub struct Assembler {
     program: Program,
+    // corresponds to .data
+    data: Vec<String>,
 }
 
 impl Assembler {
     pub fn new(program: Program) -> Self {
-        Self { program }
+        Self { program, data: Vec::new() }
     }
 
-    pub fn assemble(&self) -> String {
+    pub fn assemble(&mut self) -> String {
         let mut output = String::new();
-        output.push_str("# Globals\n");
-        output.push_str(".data\n");
         for global in self.program.globals.values() {
             let global_code = self.assemble_global(global);
-            output.push_str(global_code.as_str());
+            self.data.push(global_code);
         }
-        output.push_str("\n# Methods\n");
+
         output.push_str(".text\n");
         output.push_str(".globl main\n");
-        for method in self.program.methods.values() {
+        // todo: remove the .clone()
+        for method in self.program.methods.clone().values() {
             let method_code = self.assemble_method(method);
             output.push_str(method_code.as_str());
         }
-        output
+
+        let mut data_output = String::from(".data\n");
+        for data in self.data.iter() {
+            data_output.push_str(data.as_str());
+            data_output.push('\n');
+        }
+        data_output + "\n" + output.as_str()
     }
 
-    fn assemble_method(&self, method: &Method) -> String {
+    fn assemble_method(&mut self, method: &Method) -> String {
         let mut output = format!("{}:\n", method.name.inner);
 
         // Compute stack spacesl
@@ -261,6 +268,15 @@ impl Assembler {
                     }
                     let tmp = get_inst_ref_location(inst_ref);
                     output.push_str(format!("    movq %rax, {}\n", tmp).as_str());
+                }
+                Inst::LoadStringLiteral(s) => {
+                    let str_name = format!("str_{}", self.data.len());
+                    let data_output = format!("{}:\n    .string {:?}\n    .align 16", str_name, s);
+                    self.data.push(data_output);
+
+                    output.push_str(format!("    leaq {}(%rip), %r10\n", str_name).as_str());
+                    // todo: avoid using %r10 (leaq doesn't let you use two memory locations)
+                    output.push_str(format!("    movq %r10, {}\n", get_inst_ref_location(inst_ref)).as_str());
                 }
                 _ => todo!(),
             }
