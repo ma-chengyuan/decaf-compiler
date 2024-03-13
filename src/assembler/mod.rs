@@ -93,7 +93,6 @@ impl Assembler {
         }
 
         for (inst_ref, inst) in method.iter_insts() {
-            inst_to_offset.insert(inst_ref, -stack_space);
             let size = match inst {
                 Inst::Add(_, _)
                 | Inst::Sub(_, _)
@@ -125,6 +124,8 @@ impl Assembler {
                 Inst::Illegal => unreachable!(),
             };
             stack_space += size as i64;
+            // todo: should this line go here or at the top of the for loop?
+            inst_to_offset.insert(inst_ref, -stack_space);
         }
         // Align stack space to 16 bytes
         stack_space = (stack_space + 15) & !15;
@@ -257,9 +258,8 @@ impl Assembler {
                     self.emit_data_label(&str_name);
                     self.emit_data_code(format!(".string {:?}", s));
                     self.emit_data_code(".align 16");
-                    self.emit_code(format!("leaq {}(%rip), %r10", str_name));
-                    // todo: avoid using %r10 (leaq doesn't let you use two memory locations)
-                    self.emit_code(format!("movq %r10, {}", get_inst_ref_location(inst_ref)));
+                    self.emit_code(format!("leaq {}(%rip), %rax", str_name));
+                    self.emit_code(format!("movq %rax, {}", get_inst_ref_location(inst_ref)));
                 }
                 Inst::LoadArray { addr, index } => {
                     // Do bound check first
@@ -327,6 +327,21 @@ impl Assembler {
                         }
                     }
                 },
+                Inst::Load(addr) => {
+                    match addr {
+                        Address::Global(name) => {
+                            self.emit_code(format!("movq {}(%rip), %rax", name));
+                        }
+                        Address::Local(stack_slot) => {
+                            self.emit_code(format!(
+                                "movq {}(%rbp), %rax",
+                                stack_slot_to_offset[stack_slot]
+                                    - method.stack_slot(*stack_slot).ty.size() as i64,
+                            ));
+                        }
+                    }
+                    self.emit_code(format!("movq %rax, {}", get_inst_ref_location(inst_ref)));
+                }
                 x => todo!("{:?}", x),
             }
         }
