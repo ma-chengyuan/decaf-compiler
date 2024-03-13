@@ -207,40 +207,32 @@ impl Assembler {
                     self.emit_code(format!("movq %rax, {}", get_inst_ref_location(inst_ref)));
                 }
                 Inst::Eq(lhs, rhs) => {
-                    self.emit_code(format!(
-                        "cmpq {}, {}",
-                        get_inst_ref_location(*lhs),
-                        get_inst_ref_location(*rhs)
-                    ));
+                    self.emit_code(format!("movq {}, %rax", get_inst_ref_location(*lhs)));
+                    self.emit_code(format!("cmpq %rax, {}", get_inst_ref_location(*rhs)));
                     self.emit_code("sete %al");
-                    self.emit_code(format!("movzbq %al, {}", get_inst_ref_location(inst_ref)));
+                    self.emit_code(format!("movzbq %al, %rax"));
+                    self.emit_code(format!("movq %rax, {}", get_inst_ref_location(inst_ref)));
                 }
                 Inst::Neq(lhs, rhs) => {
-                    self.emit_code(format!(
-                        "cmpq {}, {}",
-                        get_inst_ref_location(*lhs),
-                        get_inst_ref_location(*rhs)
-                    ));
+                    self.emit_code(format!("movq {}, %rax", get_inst_ref_location(*lhs)));
+                    self.emit_code(format!("cmpq %rax, {}", get_inst_ref_location(*rhs)));
                     self.emit_code("setne %al");
-                    self.emit_code(format!("movzbq %al, {}", get_inst_ref_location(inst_ref)));
+                    self.emit_code(format!("movzbq %al, %rax"));
+                    self.emit_code(format!("movq %rax, {}", get_inst_ref_location(inst_ref)));
                 }
                 Inst::Less(lhs, rhs) => {
-                    self.emit_code(format!(
-                        "cmpq {}, {}",
-                        get_inst_ref_location(*lhs),
-                        get_inst_ref_location(*rhs)
-                    ));
+                    self.emit_code(format!("movq {}, %rax", get_inst_ref_location(*lhs)));
+                    self.emit_code(format!("cmpq %rax, {}", get_inst_ref_location(*rhs)));
                     self.emit_code("setl %al");
-                    self.emit_code(format!("movzbq %al, {}", get_inst_ref_location(inst_ref)));
+                    self.emit_code(format!("movzbq %al, %rax"));
+                    self.emit_code(format!("movq %rax, {}", get_inst_ref_location(inst_ref)));
                 }
                 Inst::LessEq(lhs, rhs) => {
-                    self.emit_code(format!(
-                        "cmpq {}, {}",
-                        get_inst_ref_location(*lhs),
-                        get_inst_ref_location(*rhs)
-                    ));
+                    self.emit_code(format!("movq {}, %rax", get_inst_ref_location(*lhs)));
+                    self.emit_code(format!("cmpq %rax, {}", get_inst_ref_location(*rhs)));
                     self.emit_code("setle %al");
-                    self.emit_code(format!("movzbq %al, {}", get_inst_ref_location(inst_ref)));
+                    self.emit_code(format!("movzbq %al, %rax"));
+                    self.emit_code(format!("movq %rax, {}", get_inst_ref_location(inst_ref)));
                 }
                 Inst::LoadConst(value) => {
                     self.load_int_or_bool_const(value, &get_inst_ref_location(inst_ref));
