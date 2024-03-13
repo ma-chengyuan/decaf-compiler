@@ -253,7 +253,7 @@ impl Assembler {
                         );
                         stack_space_for_args += 8;
                     }
-                    output.push_str(format!("    call {}", callee_name).as_str());
+                    output.push_str(format!("    call {}\n", callee_name).as_str());
                     if stack_space_for_args > 0 {
                         output.push_str(
                             format!("    addq ${}, %rsp\n", stack_space_for_args).as_str(),
