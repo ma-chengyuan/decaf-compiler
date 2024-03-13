@@ -76,8 +76,8 @@ impl Assembler {
         // Everything has a home on the stack -- for now?
         let mut stack_slot_to_offset: HashMap<StackSlotRef, i64> = HashMap::new();
         for (stack_slot_ref, stack_slot) in method.iter_slack_slots() {
-            stack_slot_to_offset.insert(stack_slot_ref, -stack_space);
             stack_space += stack_slot.ty.size() as i64;
+            stack_slot_to_offset.insert(stack_slot_ref, -stack_space);
         }
         let mut inst_to_offset: HashMap<InstRef, i64> = HashMap::new();
 
@@ -309,18 +309,14 @@ impl Assembler {
                     }
                 }
                 Inst::Initialize { stack_slot, value } => match value {
-                    // todo: figure out if i'm supposed to subtract value.size() or not
                     Const::Int(_) | Const::Bool(_) => {
                         self.load_int_or_bool_const(
                             value,
-                            &format!(
-                                "{}(%rbp)",
-                                stack_slot_to_offset[stack_slot] - value.size() as i64
-                            ),
+                            &format!("{}(%rbp)", stack_slot_to_offset[stack_slot]),
                         );
                     }
                     Const::Array(arr_vals) => {
-                        let mut stack_slot = stack_slot_to_offset[stack_slot] - value.size() as i64;
+                        let mut stack_slot = stack_slot_to_offset[stack_slot];
                         for val in arr_vals.iter() {
                             self.load_int_or_bool_const(val, &format!("{}(%rbp)", stack_slot));
                             stack_slot += val.size() as i64;
@@ -336,7 +332,6 @@ impl Assembler {
                             self.emit_code(format!(
                                 "movq {}(%rbp), %rax",
                                 stack_slot_to_offset[stack_slot]
-                                    - method.stack_slot(*stack_slot).ty.size() as i64,
                             ));
                         }
                     }
