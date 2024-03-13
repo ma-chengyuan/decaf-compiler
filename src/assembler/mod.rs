@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, fmt::format};
 
 use crate::inter::{
     constant::Const,
@@ -25,20 +25,20 @@ impl Assembler {
 
     /// Emit a line of assembly to the data section
     fn emit_data_code<T: std::fmt::Display>(&mut self, code: T) {
-        self.data.push(format!("    {}\n", code));
+        self.data.push(format!("    {}", code));
     }
 
     fn emit_data_label(&mut self, label: &str) {
-        self.data.push(format!("{}:\n", label));
+        self.data.push(format!("{}:", label));
     }
 
     /// Emit a line of assembly to the code section
     fn emit_code<T: std::fmt::Display>(&mut self, code: T) {
-        self.code.push(format!("    {}\n", code));
+        self.code.push(format!("    {}", code));
     }
 
     fn emit_label(&mut self, label: &str) {
-        self.code.push(format!("{}:\n", label));
+        self.code.push(format!("{}:", label));
     }
 
     /// Compiles the given program and returns the corresponding assembly code
@@ -80,6 +80,18 @@ impl Assembler {
             stack_space += stack_slot.ty.size() as i64;
         }
         let mut inst_to_offset: HashMap<InstRef, i64> = HashMap::new();
+
+        // Declare as macro to work around borrow checker
+        // Can't use regular functions because it would borrow self.program.globals
+        macro_rules! address_to_ty {
+            ($addr:expr) => {
+                (match $addr {
+                    Address::Local(stack_slot) => &method.stack_slot(*stack_slot).ty,
+                    Address::Global(name) => &self.program.globals[&name.to_string()].ty,
+                })
+            };
+        }
+
         for (inst_ref, inst) in method.iter_insts() {
             inst_to_offset.insert(inst_ref, -stack_space);
             let size = match inst {
@@ -94,19 +106,10 @@ impl Assembler {
                 | Inst::Less(_, _)
                 | Inst::LessEq(_, _)
                 | Inst::Not(_) => BOOL_SIZE,
-                Inst::Load(addr) => match addr {
-                    Address::Local(stack_slot) => method.stack_slot(*stack_slot).ty.size(),
-                    Address::Global(name) => self.program.globals[&name.to_string()].ty.size(),
-                },
-                Inst::LoadArray { addr, .. } => match addr {
-                    Address::Local(stack_slot) => match &method.stack_slot(*stack_slot).ty {
-                        Type::Array { base, .. } => base.size(),
-                        _ => unreachable!(),
-                    },
-                    Address::Global(name) => match &self.program.globals[&name.to_string()].ty {
-                        Type::Array { base, .. } => base.size(),
-                        _ => unreachable!(),
-                    },
+                Inst::Load(addr) => address_to_ty!(addr).size(),
+                Inst::LoadArray { addr, .. } => match address_to_ty!(addr) {
+                    Type::Array { base, .. } => base.size(),
+                    _ => unreachable!(),
                 },
                 Inst::LoadConst(c) => c.size(),
                 Inst::LoadStringLiteral(_) => INT_SIZE,
@@ -288,6 +291,53 @@ impl Assembler {
                     // todo: avoid using %r10 (leaq doesn't let you use two memory locations)
                     self.emit_code(format!("movq %r10, {}", get_inst_ref_location(inst_ref)));
                 }
+                Inst::LoadArray { addr, index } => {
+                    // Do bound check first
+                    self.emit_code(format!("movq {}, %rax", get_inst_ref_location(*index)));
+                    let (length, elem_size) = match address_to_ty!(addr) {
+                        Type::Array { length, base } => (*length, base.size()),
+                        _ => unreachable!(),
+                    };
+                    self.emit_bounds_check(length);
+                    match addr {
+                        Address::Global(name) => {
+                            self.emit_code(format!(
+                                "movq {}(%rip, %rax, {}), %rax",
+                                name, elem_size
+                            ));
+                        }
+                        Address::Local(stack_slot) => {
+                            self.emit_code(format!(
+                                "movq {}(%rbp, %rax, {}), %rax",
+                                stack_slot_to_offset[stack_slot], elem_size
+                            ));
+                        }
+                    }
+                    self.emit_code(format!("movq %rax, {}", get_inst_ref_location(inst_ref)));
+                }
+                Inst::StoreArray { addr, index, value } => {
+                    self.emit_code(format!("movq {}, %rax", get_inst_ref_location(*index)));
+                    let (length, elem_size) = match address_to_ty!(addr) {
+                        Type::Array { length, base } => (*length, base.size()),
+                        _ => unreachable!(),
+                    };
+                    self.emit_bounds_check(length);
+                    self.emit_code(format!("movq {}, %rcx", get_inst_ref_location(*value)));
+                    match addr {
+                        Address::Global(name) => {
+                            self.emit_code(format!(
+                                "movq %rcx, {}(%rip, %rax, {})",
+                                name, elem_size
+                            ));
+                        }
+                        Address::Local(stack_slot) => {
+                            self.emit_code(format!(
+                                "movq %rcx, {}(%rbp, %rax, {})",
+                                stack_slot_to_offset[stack_slot], elem_size
+                            ));
+                        }
+                    }
+                }
                 _ => todo!(),
             }
         }
@@ -306,42 +356,37 @@ impl Assembler {
         self.emit_code("ret");
     }
 
-    fn assemble_global(&mut self, var: &GlobalVar) {
-        match var.ty {
-            Type::Void => unreachable!(),
-            Type::Primitive(PrimitiveType::Int) => {
-                let Const::Int(val) = var.init else {
-                    unreachable!();
-                };
-                self.emit_data_code(format!(".quad {}", val));
-            }
-            Type::Primitive(PrimitiveType::Bool) => {
-                let Const::Bool(val) = var.init else {
-                    unreachable!();
-                };
-                self.emit_data_code(format!(".quad {}", if val { 1 } else { 0 }));
-            }
-            Type::Array { ref base, length } => {
-                let Const::Array(ref val) = var.init else {
-                    unreachable!();
-                };
-                for value in val.iter() {
-                    let outval: i64 = match value {
-                        Const::Int(v) => *v,
-                        Const::Bool(b) => {
-                            if *b {
-                                1i64
-                            } else {
-                                0i64
-                            }
-                        }
-                        Const::Array(arr) => unreachable!(),
-                    };
-                    self.emit_data_code(format!(".quad {}", outval));
+    /// Checks if %rax is in [0, length) and panics if not
+    fn emit_bounds_check(&mut self, length: usize) {
+        let fail_branch = format!("bound_check_fail_{}", self.code.len());
+        let pass_branch = format!("bound_check_pass_{}", self.code.len());
+        self.emit_code("cmpq $0, %rax");
+        self.emit_code(format!("jl {}", fail_branch));
+        self.emit_code(format!("cmpq ${}, %rax", length));
+        self.emit_code(format!("jl {}", pass_branch));
+        self.emit_label(&fail_branch);
+        // Call exit(-1)
+        self.emit_code("movq $-1, %rdi");
+        // TODO: use a more descriptive error message
+        self.emit_code("call exit");
+        self.emit_label(&pass_branch);
+    }
+
+    fn emit_const_data(&mut self, c: &Const) {
+        match c {
+            Const::Int(val) => self.emit_data_code(format!(".quad {}", val)),
+            Const::Bool(val) => self.emit_data_code(format!(".quad {}", if *val { 1 } else { 0 })),
+            Const::Array(val) => {
+                for v in val.iter() {
+                    self.emit_const_data(v);
                 }
             }
-            Type::Invalid => unreachable!(),
         }
+    }
+
+    fn assemble_global(&mut self, var: &GlobalVar) {
+        self.emit_data_label(&var.name.inner);
+        self.emit_const_data(&var.init);
         self.emit_data_code(".align 16");
     }
 }
