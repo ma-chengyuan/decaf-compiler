@@ -70,6 +70,7 @@ impl Assembler {
 
     fn assemble_method(&mut self, method: &Method) {
         self.emit_label(&method.name.inner);
+        let arg_registers = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"];
 
         // Compute stack spaces
         let mut stack_space = 0i64;
@@ -134,6 +135,28 @@ impl Assembler {
         // Save all callee-saved registers
         for reg in &["rbx", "rbp", "r12", "r13", "r14", "r15"] {
             self.emit_code(format!("pushq %{}", reg));
+        }
+
+        // parameters 1..n are mapped to the first n stack slots by our IR builder
+        {
+            let n_args = method.params.len();
+            for (arg_idx, arg_slot_iter) in
+                method.iter_slack_slots().enumerate().take(n_args).take(6)
+            {
+                self.emit_code(format!(
+                    "movq %{}, {}(%rbp)",
+                    arg_registers[arg_idx], stack_slot_to_offset[&arg_slot_iter.0]
+                ));
+            }
+            let mut stack_offset = 16; // return address is 8 bytes. saved rbp is also 8 bytes.
+            for (arg_slot_ref, arg_slot) in method.iter_slack_slots().skip(6) {
+                self.emit_code(format!("movq {}(%rbp), %rax", stack_offset));
+                stack_offset += arg_slot.ty.size() as i64;
+                self.emit_code(format!(
+                    "movq %rax, {}(%rbp)",
+                    stack_slot_to_offset[&arg_slot_ref]
+                ));
+            }
         }
 
         let get_inst_ref_location = |iref: InstRef| format!("{}(%rbp)", inst_to_offset[&iref]);
@@ -227,7 +250,6 @@ impl Assembler {
                     method: callee_name,
                     args,
                 } => {
-                    let arg_registers = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"];
                     for (arg_idx, arg_ref) in args.iter().enumerate().take(6) {
                         self.emit_code(format!(
                             "movq {}, %{}",
