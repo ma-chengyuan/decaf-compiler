@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fmt::format};
+use std::collections::HashMap;
 
 use crate::inter::{
     constant::Const,
@@ -24,13 +24,21 @@ impl Assembler {
     }
 
     /// Emit a line of assembly to the data section
-    fn emit_data(&mut self, data: String) {
-        self.data.push(data + "\n");
+    fn emit_data_code<T: std::fmt::Display>(&mut self, code: T) {
+        self.data.push(format!("    {}\n", code));
+    }
+
+    fn emit_data_label(&mut self, label: &str) {
+        self.data.push(format!("{}:\n", label));
     }
 
     /// Emit a line of assembly to the code section
-    fn emit_code(&mut self, code: String) {
-        self.code.push(code + "\n");
+    fn emit_code<T: std::fmt::Display>(&mut self, code: T) {
+        self.code.push(format!("    {}\n", code));
+    }
+
+    fn emit_label(&mut self, label: &str) {
+        self.code.push(format!("{}:\n", label));
     }
 
     /// Compiles the given program and returns the corresponding assembly code
@@ -61,7 +69,7 @@ impl Assembler {
     }
 
     fn assemble_method(&mut self, method: &Method) {
-        self.emit_code(format!("{}:\n", method.name.inner));
+        self.emit_label(&method.name.inner);
 
         // Compute stack spaces
         let mut stack_space = 0i64;
@@ -118,19 +126,10 @@ impl Assembler {
         // Align stack space to 16 bytes
         stack_space = (stack_space + 15) & !15;
 
-        macro_rules! emit {
-            ($($arg:tt)*) => {{
-                let mut output = String::new();
-                output.push_str("    ");
-                output.push_str(format!($($arg)*).as_str());
-                self.emit_code(output);
-            }};
-        }
-
-        emit!("enterq ${}, $0", stack_space);
+        self.emit_code(format!("enterq ${}, $0", stack_space));
         // Save all callee-saved registers
         for reg in &["rbx", "rbp", "r12", "r13", "r14", "r15"] {
-            emit!("pushq %{}", reg);
+            self.emit_code(format!("pushq %{}", reg));
         }
 
         // for (block_idx, bloc)
@@ -146,26 +145,22 @@ impl Assembler {
                         Inst::Mul(_, _) => "imul",
                         _ => unreachable!(),
                     };
-                    self.emit_code(format!("    movq {}, %rax\n", get_inst_ref_location(*lhs)));
+                    self.emit_code(format!("movq {}, %rax", get_inst_ref_location(*lhs)));
                     self.emit_code(format!(
-                        "    {}q {}, %rax\n",
+                        "{}q {}, %rax",
                         inst_name,
                         get_inst_ref_location(*rhs)
                     ));
-                    self.emit_code(format!(
-                        "    movq %rax, {}\n",
-                        get_inst_ref_location(inst_ref)
-                    ));
+                    self.emit_code(format!("movq %rax, {}", get_inst_ref_location(inst_ref)));
                 }
                 Inst::Div(lhs, rhs) | Inst::Mod(lhs, rhs) => {
-                    self.emit_code(format!("    movq {}, %rax\n", get_inst_ref_location(*lhs)));
-                    self.emit_code(format!("    cqto\n")); // Godbolt does it
-                    self.emit_code(format!("    idivq {}\n", get_inst_ref_location(*rhs)));
+                    self.emit_code(format!("movq {}, %rax", get_inst_ref_location(*lhs)));
+                    self.emit_code("cqto"); // Godbolt does it
+                    self.emit_code(format!("idivq {}", get_inst_ref_location(*rhs)));
 
                     // Behavior depends on whether div or mod
-
                     self.emit_code(format!(
-                        "    movq %{}, {}\n",
+                        "movq %{}, {}",
                         match inst {
                             Inst::Div(_, _) => "rax",
                             Inst::Mod(_, _) => "rdx",
@@ -175,71 +170,52 @@ impl Assembler {
                     ));
                 }
                 Inst::Neg(var) | Inst::Not(var) => {
-                    self.emit_code(format!("    movq {}, %rax\n", get_inst_ref_location(*var)));
+                    self.emit_code(format!("movq {}, %rax", get_inst_ref_location(*var)));
                     self.emit_code(format!(
-                        "    {}q %rax\n",
+                        "{}q %rax",
                         match inst {
                             Inst::Neg(_) => "neg",
                             Inst::Not(_) => "not",
                             _ => unreachable!(),
                         }
                     ));
-                    self.emit_code(format!(
-                        "    movq %rax, {}\n",
-                        get_inst_ref_location(inst_ref)
-                    ));
+                    self.emit_code(format!("movq %rax, {}", get_inst_ref_location(inst_ref)));
                 }
                 Inst::Eq(lhs, rhs) => {
                     self.emit_code(format!(
-                        "    cmpq {}, {}\n",
+                        "cmpq {}, {}",
                         get_inst_ref_location(*lhs),
                         get_inst_ref_location(*rhs)
                     ));
-                    self.emit_code(format!("    sete %al\n"));
-                    self.emit_code(format!("    sete %al\n"));
-                    self.emit_code(format!(
-                        "    movzbq %al, {}\n",
-                        get_inst_ref_location(inst_ref)
-                    ));
+                    self.emit_code("sete %al");
+                    self.emit_code(format!("movzbq %al, {}", get_inst_ref_location(inst_ref)));
                 }
                 Inst::Neq(lhs, rhs) => {
                     self.emit_code(format!(
-                        "    cmpq {}, {}\n",
+                        "cmpq {}, {}",
                         get_inst_ref_location(*lhs),
                         get_inst_ref_location(*rhs)
                     ));
-                    self.emit_code(format!("    setne %al\n"));
-                    self.emit_code(format!("    setne %al\n"));
-                    self.emit_code(format!(
-                        "    movzbq %al, {}\n",
-                        get_inst_ref_location(inst_ref)
-                    ));
+                    self.emit_code("setne %al");
+                    self.emit_code(format!("movzbq %al, {}", get_inst_ref_location(inst_ref)));
                 }
                 Inst::Less(lhs, rhs) => {
                     self.emit_code(format!(
-                        "    cmpq {}, {}\n",
+                        "cmpq {}, {}",
                         get_inst_ref_location(*lhs),
                         get_inst_ref_location(*rhs)
                     ));
-                    self.emit_code(format!("    setl %al\n"));
-                    self.emit_code(format!("    setl %al\n"));
-                    self.emit_code(format!(
-                        "    movzbq %al, {}\n",
-                        get_inst_ref_location(inst_ref)
-                    ));
+                    self.emit_code("setl %al");
+                    self.emit_code(format!("movzbq %al, {}", get_inst_ref_location(inst_ref)));
                 }
                 Inst::LessEq(lhs, rhs) => {
                     self.emit_code(format!(
-                        "    cmpq {}, {}\n",
+                        "cmpq {}, {}",
                         get_inst_ref_location(*lhs),
                         get_inst_ref_location(*rhs)
                     ));
-                    self.emit_code(format!("    setle %al\n"));
-                    self.emit_code(format!("    setle %al\n"));
-                    self.emit_code(format!(
-                        "    movzbq %al, {}\n",
-                        get_inst_ref_location(inst_ref)
-                    ));
+                    self.emit_code("setle %al");
+                    self.emit_code(format!("movzbq %al, {}", get_inst_ref_location(inst_ref)));
                 }
                 Inst::LoadConst(value) => {
                     match value {
@@ -247,14 +223,14 @@ impl Assembler {
                             if *v <= i32::MAX as i64 && *v >= i32::MIN as i64 {
                                 // Value fits within 32 bits, use movq
                                 self.emit_code(format!(
-                                    "    movq ${}, {}\n",
+                                    "movq ${}, {}",
                                     v,
                                     get_inst_ref_location(inst_ref)
                                 ));
                             } else {
                                 // Value requires more than 32 bits, use movabsq
                                 self.emit_code(format!(
-                                    "    movabsq ${}, {}\n",
+                                    "movabsq ${}, {}",
                                     v,
                                     get_inst_ref_location(inst_ref)
                                 ));
@@ -264,7 +240,7 @@ impl Assembler {
                             // Boolean values always fit within 32 bits
                             let val = if *b { 1 } else { 0 };
                             self.emit_code(format!(
-                                "    movq ${}, {}\n",
+                                "movq ${}, {}",
                                 val,
                                 get_inst_ref_location(inst_ref)
                             ));
@@ -280,7 +256,7 @@ impl Assembler {
                     let arg_registers = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"];
                     for (arg_idx, arg_ref) in args.iter().enumerate().take(6) {
                         self.emit_code(format!(
-                            "    movq {}, %{}\n",
+                            "movq {}, %{}",
                             get_inst_ref_location(*arg_ref),
                             arg_registers[arg_idx]
                         ));
@@ -289,31 +265,28 @@ impl Assembler {
                     let mut stack_space_for_args = 0;
                     if n_remaining_args % 2 == 1 {
                         // Align stack to 16 bytes
-                        self.emit_code("    subq $8, %rsp\n".to_string());
+                        self.emit_code("subq $8, %rsp".to_string());
                         stack_space_for_args += 8;
                     }
                     for arg_ref in args.iter().skip(6).rev() {
-                        self.emit_code(format!("    pushq {}\n", get_inst_ref_location(*arg_ref)));
+                        self.emit_code(format!("pushq {}", get_inst_ref_location(*arg_ref)));
                         stack_space_for_args += 8;
                     }
-                    self.emit_code(format!("    call {}\n", callee_name));
+                    self.emit_code(format!("call {}", callee_name));
                     if stack_space_for_args > 0 {
-                        self.emit_code(format!("    addq ${}, %rsp\n", stack_space_for_args));
+                        self.emit_code(format!("addq ${}, %rsp", stack_space_for_args));
                     }
                     let tmp = get_inst_ref_location(inst_ref);
-                    self.emit_code(format!("    movq %rax, {}\n", tmp));
+                    self.emit_code(format!("movq %rax, {}", tmp));
                 }
                 Inst::LoadStringLiteral(s) => {
                     let str_name = format!("str_{}", self.data.len());
-                    let data_output = format!("{}:\n    .string {:?}\n    .align 16", str_name, s);
-                    self.data.push(data_output);
-
-                    self.emit_code(format!("    leaq {}(%rip), %r10\n", str_name));
+                    self.emit_data_label(&str_name);
+                    self.emit_data_code(format!(".string {:?}", s));
+                    self.emit_data_code(".align 16");
+                    self.emit_code(format!("leaq {}(%rip), %r10", str_name));
                     // todo: avoid using %r10 (leaq doesn't let you use two memory locations)
-                    self.emit_code(format!(
-                        "    movq %r10, {}\n",
-                        get_inst_ref_location(inst_ref)
-                    ));
+                    self.emit_code(format!("movq %r10, {}", get_inst_ref_location(inst_ref)));
                 }
                 _ => todo!(),
             }
@@ -321,34 +294,32 @@ impl Assembler {
 
         if method.name.inner.as_ref() == "main" {
             // return 0;
-            self.emit_code("    movq $0, %rax\n".to_string());
+            self.emit_code("movq $0, %rax");
         }
 
         // Restore all callee-saved registers
         for reg in ["rbx", "rbp", "r12", "r13", "r14", "r15"].iter().rev() {
-            self.emit_code(format!("    popq %{}\n", reg));
+            self.emit_code(format!("popq %{}", reg));
         }
         // Restore stack frame
-        self.emit_code(format!("    leave\n"));
-
-        self.emit_code("ret".to_string());
+        self.emit_code("leave");
+        self.emit_code("ret");
     }
 
     fn assemble_global(&mut self, var: &GlobalVar) {
-        let mut output = format!("{}:\n", var.name.inner);
         match var.ty {
             Type::Void => unreachable!(),
             Type::Primitive(PrimitiveType::Int) => {
                 let Const::Int(val) = var.init else {
                     unreachable!();
                 };
-                output.push_str(format!("   .quad {}\n", val).as_str());
+                self.emit_data_code(format!(".quad {}", val));
             }
             Type::Primitive(PrimitiveType::Bool) => {
                 let Const::Bool(val) = var.init else {
                     unreachable!();
                 };
-                output.push_str(format!("   .quad {}\n", if val { "1" } else { "0" }).as_str());
+                self.emit_data_code(format!(".quad {}", if val { 1 } else { 0 }));
             }
             Type::Array { ref base, length } => {
                 let Const::Array(ref val) = var.init else {
@@ -366,12 +337,11 @@ impl Assembler {
                         }
                         Const::Array(arr) => unreachable!(),
                     };
-                    output.push_str(format!("   .quad {}\n", outval).as_str());
+                    self.emit_data_code(format!(".quad {}", outval));
                 }
             }
             Type::Invalid => unreachable!(),
         }
-        output.push_str("    .align 16");
-        self.emit_data(output);
+        self.emit_data_code(".align 16");
     }
 }
