@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, fmt::format};
 
 use crate::inter::{
     constant::Const,
@@ -33,6 +33,7 @@ impl Assembler {
         self.code.push(code + "\n");
     }
 
+    /// Compiles the given program and returns the corresponding assembly code
     pub fn assemble(&mut self) -> String {
         // todo: remove the .clone()
         for global in self.program.globals.clone().values() {
@@ -60,9 +61,9 @@ impl Assembler {
     }
 
     fn assemble_method(&mut self, method: &Method) {
-        let mut output = format!("{}:\n", method.name.inner);
+        self.emit_code(format!("{}:\n", method.name.inner));
 
-        // Compute stack spacesl
+        // Compute stack spaces
         let mut stack_space = 0i64;
         // Everything has a home on the stack -- for now?
         let mut stack_slot_to_offset: HashMap<StackSlotRef, i64> = HashMap::new();
@@ -119,9 +120,10 @@ impl Assembler {
 
         macro_rules! emit {
             ($($arg:tt)*) => {{
+                let mut output = String::new();
                 output.push_str("    ");
                 output.push_str(format!($($arg)*).as_str());
-                output.push_str("\n");
+                self.emit_code(output);
             }};
         }
 
@@ -144,151 +146,128 @@ impl Assembler {
                         Inst::Mul(_, _) => "imul",
                         _ => unreachable!(),
                     };
-                    output.push_str(
-                        format!("    movq {}, %rax\n", get_inst_ref_location(*lhs)).as_str(),
-                    );
-                    output.push_str(
-                        format!("    {}q {}, %rax\n", inst_name, get_inst_ref_location(*rhs))
-                            .as_str(),
-                    );
-                    output.push_str(
-                        format!("    movq %rax, {}\n", get_inst_ref_location(inst_ref)).as_str(),
-                    );
+                    self.emit_code(format!("    movq {}, %rax\n", get_inst_ref_location(*lhs)));
+                    self.emit_code(format!(
+                        "    {}q {}, %rax\n",
+                        inst_name,
+                        get_inst_ref_location(*rhs)
+                    ));
+                    self.emit_code(format!(
+                        "    movq %rax, {}\n",
+                        get_inst_ref_location(inst_ref)
+                    ));
                 }
                 Inst::Div(lhs, rhs) | Inst::Mod(lhs, rhs) => {
-                    output.push_str(
-                        format!("    movq {}, %rax\n", get_inst_ref_location(*lhs)).as_str(),
-                    );
-                    output.push_str(format!("    cqto\n").as_str()); // Godbolt does it
-                    output
-                        .push_str(format!("    idivq {}\n", get_inst_ref_location(*rhs)).as_str());
+                    self.emit_code(format!("    movq {}, %rax\n", get_inst_ref_location(*lhs)));
+                    self.emit_code(format!("    cqto\n")); // Godbolt does it
+                    self.emit_code(format!("    idivq {}\n", get_inst_ref_location(*rhs)));
 
                     // Behavior depends on whether div or mod
 
-                    output.push_str(
-                        format!(
-                            "    movq %{}, {}\n",
-                            match inst {
-                                Inst::Div(_, _) => "rax",
-                                Inst::Mod(_, _) => "rdx",
-                                _ => unreachable!(),
-                            },
-                            get_inst_ref_location(inst_ref)
-                        )
-                        .as_str(),
-                    );
+                    self.emit_code(format!(
+                        "    movq %{}, {}\n",
+                        match inst {
+                            Inst::Div(_, _) => "rax",
+                            Inst::Mod(_, _) => "rdx",
+                            _ => unreachable!(),
+                        },
+                        get_inst_ref_location(inst_ref)
+                    ));
                 }
                 Inst::Neg(var) | Inst::Not(var) => {
-                    output.push_str(
-                        format!("    movq {}, %rax\n", get_inst_ref_location(*var)).as_str(),
-                    );
-                    output.push_str(
-                        format!(
-                            "    {}q %rax\n",
-                            match inst {
-                                Inst::Neg(_) => "neg",
-                                Inst::Not(_) => "not",
-                                _ => unreachable!(),
-                            }
-                        )
-                        .as_str(),
-                    );
-                    output.push_str(
-                        format!("    movq %rax, {}\n", get_inst_ref_location(inst_ref)).as_str(),
-                    );
+                    self.emit_code(format!("    movq {}, %rax\n", get_inst_ref_location(*var)));
+                    self.emit_code(format!(
+                        "    {}q %rax\n",
+                        match inst {
+                            Inst::Neg(_) => "neg",
+                            Inst::Not(_) => "not",
+                            _ => unreachable!(),
+                        }
+                    ));
+                    self.emit_code(format!(
+                        "    movq %rax, {}\n",
+                        get_inst_ref_location(inst_ref)
+                    ));
                 }
                 Inst::Eq(lhs, rhs) => {
-                    output.push_str(
-                        format!(
-                            "    cmpq {}, {}\n",
-                            get_inst_ref_location(*lhs),
-                            get_inst_ref_location(*rhs)
-                        )
-                        .as_str(),
-                    );
-                    output.push_str(format!("    sete %al\n").as_str());
-                    output.push_str(format!("    sete %al\n").as_str());
-                    output.push_str(
-                        format!("    movzbq %al, {}\n", get_inst_ref_location(inst_ref)).as_str(),
-                    );
+                    self.emit_code(format!(
+                        "    cmpq {}, {}\n",
+                        get_inst_ref_location(*lhs),
+                        get_inst_ref_location(*rhs)
+                    ));
+                    self.emit_code(format!("    sete %al\n"));
+                    self.emit_code(format!("    sete %al\n"));
+                    self.emit_code(format!(
+                        "    movzbq %al, {}\n",
+                        get_inst_ref_location(inst_ref)
+                    ));
                 }
                 Inst::Neq(lhs, rhs) => {
-                    output.push_str(
-                        format!(
-                            "    cmpq {}, {}\n",
-                            get_inst_ref_location(*lhs),
-                            get_inst_ref_location(*rhs)
-                        )
-                        .as_str(),
-                    );
-                    output.push_str(format!("    setne %al\n").as_str());
-                    output.push_str(format!("    setne %al\n").as_str());
-                    output.push_str(
-                        format!("    movzbq %al, {}\n", get_inst_ref_location(inst_ref)).as_str(),
-                    );
+                    self.emit_code(format!(
+                        "    cmpq {}, {}\n",
+                        get_inst_ref_location(*lhs),
+                        get_inst_ref_location(*rhs)
+                    ));
+                    self.emit_code(format!("    setne %al\n"));
+                    self.emit_code(format!("    setne %al\n"));
+                    self.emit_code(format!(
+                        "    movzbq %al, {}\n",
+                        get_inst_ref_location(inst_ref)
+                    ));
                 }
                 Inst::Less(lhs, rhs) => {
-                    output.push_str(
-                        format!(
-                            "    cmpq {}, {}\n",
-                            get_inst_ref_location(*lhs),
-                            get_inst_ref_location(*rhs)
-                        )
-                        .as_str(),
-                    );
-                    output.push_str(format!("    setl %al\n").as_str());
-                    output.push_str(format!("    setl %al\n").as_str());
-                    output.push_str(
-                        format!("    movzbq %al, {}\n", get_inst_ref_location(inst_ref)).as_str(),
-                    );
+                    self.emit_code(format!(
+                        "    cmpq {}, {}\n",
+                        get_inst_ref_location(*lhs),
+                        get_inst_ref_location(*rhs)
+                    ));
+                    self.emit_code(format!("    setl %al\n"));
+                    self.emit_code(format!("    setl %al\n"));
+                    self.emit_code(format!(
+                        "    movzbq %al, {}\n",
+                        get_inst_ref_location(inst_ref)
+                    ));
                 }
                 Inst::LessEq(lhs, rhs) => {
-                    output.push_str(
-                        format!(
-                            "    cmpq {}, {}\n",
-                            get_inst_ref_location(*lhs),
-                            get_inst_ref_location(*rhs)
-                        )
-                        .as_str(),
-                    );
-                    output.push_str(format!("    setle %al\n").as_str());
-                    output.push_str(format!("    setle %al\n").as_str());
-                    output.push_str(
-                        format!("    movzbq %al, {}\n", get_inst_ref_location(inst_ref)).as_str(),
-                    );
+                    self.emit_code(format!(
+                        "    cmpq {}, {}\n",
+                        get_inst_ref_location(*lhs),
+                        get_inst_ref_location(*rhs)
+                    ));
+                    self.emit_code(format!("    setle %al\n"));
+                    self.emit_code(format!("    setle %al\n"));
+                    self.emit_code(format!(
+                        "    movzbq %al, {}\n",
+                        get_inst_ref_location(inst_ref)
+                    ));
                 }
                 Inst::LoadConst(value) => {
                     match value {
                         Const::Int(v) => {
                             if *v <= i32::MAX as i64 && *v >= i32::MIN as i64 {
                                 // Value fits within 32 bits, use movq
-                                output.push_str(
-                                    format!(
-                                        "    movq ${}, {}\n",
-                                        v,
-                                        get_inst_ref_location(inst_ref)
-                                    )
-                                    .as_str(),
-                                );
+                                self.emit_code(format!(
+                                    "    movq ${}, {}\n",
+                                    v,
+                                    get_inst_ref_location(inst_ref)
+                                ));
                             } else {
                                 // Value requires more than 32 bits, use movabsq
-                                output.push_str(
-                                    format!(
-                                        "    movabsq ${}, {}\n",
-                                        v,
-                                        get_inst_ref_location(inst_ref)
-                                    )
-                                    .as_str(),
-                                );
+                                self.emit_code(format!(
+                                    "    movabsq ${}, {}\n",
+                                    v,
+                                    get_inst_ref_location(inst_ref)
+                                ));
                             }
                         }
                         Const::Bool(b) => {
                             // Boolean values always fit within 32 bits
                             let val = if *b { 1 } else { 0 };
-                            output.push_str(
-                                format!("    movq ${}, {}\n", val, get_inst_ref_location(inst_ref))
-                                    .as_str(),
-                            );
+                            self.emit_code(format!(
+                                "    movq ${}, {}\n",
+                                val,
+                                get_inst_ref_location(inst_ref)
+                            ));
                         }
                         _ => unreachable!(),
                     }
@@ -300,47 +279,41 @@ impl Assembler {
                 } => {
                     let arg_registers = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"];
                     for (arg_idx, arg_ref) in args.iter().enumerate().take(6) {
-                        output.push_str(
-                            format!(
-                                "    movq {}, %{}\n",
-                                get_inst_ref_location(*arg_ref),
-                                arg_registers[arg_idx]
-                            )
-                            .as_str(),
-                        );
+                        self.emit_code(format!(
+                            "    movq {}, %{}\n",
+                            get_inst_ref_location(*arg_ref),
+                            arg_registers[arg_idx]
+                        ));
                     }
                     let n_remaining_args = args.len().saturating_sub(6);
                     let mut stack_space_for_args = 0;
                     if n_remaining_args % 2 == 1 {
                         // Align stack to 16 bytes
-                        output.push_str("    subq $8, %rsp\n");
+                        self.emit_code("    subq $8, %rsp\n".to_string());
                         stack_space_for_args += 8;
                     }
                     for arg_ref in args.iter().skip(6).rev() {
-                        output.push_str(
-                            format!("    pushq {}\n", get_inst_ref_location(*arg_ref)).as_str(),
-                        );
+                        self.emit_code(format!("    pushq {}\n", get_inst_ref_location(*arg_ref)));
                         stack_space_for_args += 8;
                     }
-                    output.push_str(format!("    call {}\n", callee_name).as_str());
+                    self.emit_code(format!("    call {}\n", callee_name));
                     if stack_space_for_args > 0 {
-                        output.push_str(
-                            format!("    addq ${}, %rsp\n", stack_space_for_args).as_str(),
-                        );
+                        self.emit_code(format!("    addq ${}, %rsp\n", stack_space_for_args));
                     }
                     let tmp = get_inst_ref_location(inst_ref);
-                    output.push_str(format!("    movq %rax, {}\n", tmp).as_str());
+                    self.emit_code(format!("    movq %rax, {}\n", tmp));
                 }
                 Inst::LoadStringLiteral(s) => {
                     let str_name = format!("str_{}", self.data.len());
                     let data_output = format!("{}:\n    .string {:?}\n    .align 16", str_name, s);
                     self.data.push(data_output);
 
-                    output.push_str(format!("    leaq {}(%rip), %r10\n", str_name).as_str());
+                    self.emit_code(format!("    leaq {}(%rip), %r10\n", str_name));
                     // todo: avoid using %r10 (leaq doesn't let you use two memory locations)
-                    output.push_str(
-                        format!("    movq %r10, {}\n", get_inst_ref_location(inst_ref)).as_str(),
-                    );
+                    self.emit_code(format!(
+                        "    movq %r10, {}\n",
+                        get_inst_ref_location(inst_ref)
+                    ));
                 }
                 _ => todo!(),
             }
@@ -348,19 +321,17 @@ impl Assembler {
 
         if method.name.inner.as_ref() == "main" {
             // return 0;
-            output.push_str("    movq $0, %rax\n");
+            self.emit_code("    movq $0, %rax\n".to_string());
         }
 
         // Restore all callee-saved registers
         for reg in ["rbx", "rbp", "r12", "r13", "r14", "r15"].iter().rev() {
-            output.push_str(format!("    popq %{}\n", reg).as_str());
+            self.emit_code(format!("    popq %{}\n", reg));
         }
         // Restore stack frame
-        output.push_str(format!("    leave\n").as_str());
+        self.emit_code(format!("    leave\n"));
 
-        output.push_str("ret");
-
-        self.emit_code(output);
+        self.emit_code("ret".to_string());
     }
 
     fn assemble_global(&mut self, var: &GlobalVar) {
