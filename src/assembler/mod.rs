@@ -285,10 +285,7 @@ impl Assembler {
                     self.emit_bounds_check(length);
                     match addr {
                         Address::Global(name) => {
-                            self.emit_code(format!(
-                                "movq {}(%rip, %rax, {}), %rax",
-                                name, elem_size
-                            ));
+                            self.emit_code(format!("movq {}(, %rax, {}), %rax", name, elem_size));
                         }
                         Address::Local(stack_slot) => {
                             self.emit_code(format!(
@@ -309,10 +306,7 @@ impl Assembler {
                     self.emit_code(format!("movq {}, %rcx", get_inst_ref_location(*value)));
                     match addr {
                         Address::Global(name) => {
-                            self.emit_code(format!(
-                                "movq %rcx, {}(%rip, %rax, {})",
-                                name, elem_size
-                            ));
+                            self.emit_code(format!("movq %rcx, {}(, %rax, {})", name, elem_size));
                         }
                         Address::Local(stack_slot) => {
                             self.emit_code(format!(
