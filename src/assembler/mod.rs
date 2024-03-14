@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::inter::{
     constant::Const,
-    ir::{Address, GlobalVar, Inst, InstRef, Method, Program, StackSlotRef},
+    ir::{Address, Annotation, GlobalVar, Inst, InstRef, Method, Program, StackSlotRef},
     types::{Type, BOOL_SIZE, INT_SIZE},
 };
 
@@ -54,7 +54,7 @@ impl Assembler {
         }
 
         self.emit_data_label("index_out_of_bounds_msg");
-        self.emit_data_code(".string \"Error: index out of bounds\\n\"");
+        self.emit_data_code(".string \"Error: index out of bounds on line %d. Array length is %d; queried index is %d.\\n\"");
 
         let mut output = String::from(".data\n");
         for data in self.data.iter() {
@@ -284,7 +284,7 @@ impl Assembler {
                         Type::Array { length, base } => (*length, base.size()),
                         _ => unreachable!(),
                     };
-                    self.emit_bounds_check(length);
+                    self.emit_bounds_check(length, method.get_inst_annotation(index).unwrap());
                     match addr {
                         Address::Global(name) => {
                             self.emit_code(format!("movq {}(, %rax, {}), %rax", name, elem_size));
@@ -304,7 +304,7 @@ impl Assembler {
                         Type::Array { length, base } => (*length, base.size()),
                         _ => unreachable!(),
                     };
-                    self.emit_bounds_check(length);
+                    self.emit_bounds_check(length, method.get_inst_annotation(index).unwrap());
                     self.emit_code(format!("movq {}, %rcx", get_inst_ref_location(*value)));
                     match addr {
                         Address::Global(name) => {
@@ -380,7 +380,7 @@ impl Assembler {
     }
 
     /// Checks if %rax is in [0, length) and panics if not
-    fn emit_bounds_check(&mut self, length: usize) {
+    fn emit_bounds_check(&mut self, length: usize, inst_annotation: &Annotation) {
         let fail_branch = format!("bound_check_fail_{}", self.code.len());
         let pass_branch = format!("bound_check_pass_{}", self.code.len());
         self.emit_code("cmpq $0, %rax");
@@ -388,8 +388,15 @@ impl Assembler {
         self.emit_code(format!("cmpq ${}, %rax", length));
         self.emit_code(format!("jl {}", pass_branch));
         self.emit_label(&fail_branch);
-        // print an error message
+        // print an error message.
+        // first argument is the format string, second is the line number, third is arr.len, fourth is the index
         self.emit_code("leaq index_out_of_bounds_msg(%rip), %rdi");
+        self.emit_code(format!(
+            "movq ${}, %rsi",
+            inst_annotation.span.clone().unwrap().start().line
+        ));
+        self.emit_code(format!("movq ${}, %rdx", length));
+        self.emit_code("movq %rax, %rcx");
         self.emit_code("call printf");
         // Call exit(-1)
         self.emit_code("movq $-1, %rdi");

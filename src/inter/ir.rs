@@ -314,6 +314,10 @@ impl Method {
         self.inst_annotations.entry(inst_ref).or_default()
     }
 
+    pub fn get_inst_annotation(&self, inst_ref: &InstRef) -> Option<&Annotation> {
+        self.inst_annotations.get(inst_ref)
+    }
+
     pub fn annotate_block_mut(&mut self, block_ref: BlockRef) -> &mut Annotation {
         self.block_annotations.entry(block_ref).or_default()
     }
