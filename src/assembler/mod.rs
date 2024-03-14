@@ -53,7 +53,7 @@ impl Assembler {
     }
 
     /// Compiles the given program and returns the corresponding assembly code
-    pub fn assemble(&mut self) -> String {
+    pub fn assemble(&mut self, file_name: &str) -> String {
         // todo: remove the .clone()
         for global in self.program.globals.clone().values() {
             self.assemble_global(global);
@@ -72,7 +72,7 @@ impl Assembler {
             ".string \"Error: Method finished without returning anything when it should have.\\n\"",
         );
 
-        let mut output = String::from(".file 0 \"myfile.dcf\"\n.data\n");
+        let mut output = format!(".file 0 \"{}\"\n.data\n", file_name);
         for data in self.data.iter() {
             output.push_str(data.as_str());
             output.push('\n');

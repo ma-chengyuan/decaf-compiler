@@ -135,7 +135,7 @@ fn main_assembler(args: utils::cli::Args, mut writer: Box<dyn std::io::Write>) {
         }
     };
     let mut assembler = Assembler::new(program);
-    let res = assembler.assemble();
+    let res = assembler.assemble(args.input.clone().unwrap().as_os_str().to_str().unwrap());
     writeln!(writer, "{}", res).unwrap();
 }
 
