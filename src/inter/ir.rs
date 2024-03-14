@@ -322,6 +322,10 @@ impl Method {
         self.block_annotations.entry(block_ref).or_default()
     }
 
+    pub fn get_block_annotation(&self, block_ref: &BlockRef) -> Option<&Annotation> {
+        self.block_annotations.get(block_ref)
+    }
+
     pub fn next_stack_slot(&mut self, ty: Type, name: Ident) -> StackSlotRef {
         let slot_ref = StackSlotRef(self.stack_slots.len());
         self.stack_slots.push(StackSlot { ty, name });
