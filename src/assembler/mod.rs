@@ -67,6 +67,11 @@ impl Assembler {
         self.emit_data_label("index_out_of_bounds_msg");
         self.emit_data_code(".string \"Error: index out of bounds on line %d. Array length is %d; queried index is %d.\\n\"");
 
+        self.emit_data_label("no_return_value_msg");
+        self.emit_data_code(
+            ".string \"Error: Method finished without returning anything when it should have.\\n\"",
+        );
+
         let mut output = String::from(".file 0 \"myfile.dcf\"\n.data\n");
         for data in self.data.iter() {
             output.push_str(data.as_str());
@@ -411,23 +416,31 @@ impl Assembler {
             ));
             match &block.term {
                 Terminator::Return(ret) => {
-                    if let Some(ret) = ret {
-                        self.emit_code(format!("movq {}, %rax", get_inst_ref_location(*ret)));
-                    }
+                    if method.return_ty != Type::Void && ret.is_none() {
+                        // method finished without returning anything, but it should have. exit with -2
+                        self.emit_code("leaq no_return_value_msg(%rip), %rdi");
+                        self.emit_code("call printf");
+                        self.emit_code("movq $-2, %rdi");
+                        self.emit_code("call exit");
+                    } else {
+                        if let Some(ret) = ret {
+                            self.emit_code(format!("movq {}, %rax", get_inst_ref_location(*ret)));
+                        }
 
-                    if method.name.inner.as_ref() == "main" {
-                        assert!(ret.is_none());
-                        // return 0;
-                        self.emit_code("movq $0, %rax");
-                    }
+                        if method.name.inner.as_ref() == "main" {
+                            assert!(ret.is_none());
+                            // return 0;
+                            self.emit_code("movq $0, %rax");
+                        }
 
-                    // Restore all callee-saved registers
-                    for reg in ["rbx", "rbp", "r12", "r13", "r14", "r15"].iter().rev() {
-                        self.emit_code(format!("popq %{}", reg));
+                        // Restore all callee-saved registers
+                        for reg in ["rbx", "rbp", "r12", "r13", "r14", "r15"].iter().rev() {
+                            self.emit_code(format!("popq %{}", reg));
+                        }
+                        // Restore stack frame
+                        self.emit_code("leave");
+                        self.emit_code("ret");
                     }
-                    // Restore stack frame
-                    self.emit_code("leave");
-                    self.emit_code("ret");
                 }
                 Terminator::Jump(target) => {
                     self.emit_code(format!("jmp {}", block_ref_to_label!(target)));
