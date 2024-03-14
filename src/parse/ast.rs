@@ -271,7 +271,7 @@ pub struct MethodDecl {
     pub name: Ident,
     pub return_ty: Option<Type>,
     pub params: Vec<MethodParam>,
-    pub body: Block,
+    pub body: Spanned<Block>,
 }
 
 /// Corresponds to `program` in the spec.

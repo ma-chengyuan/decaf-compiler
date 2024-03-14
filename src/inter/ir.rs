@@ -195,10 +195,10 @@ impl fmt::Display for Annotation {
             write!(f, "{} ", str)?;
         }
         if let Some(span) = &self.span {
-            write!(f, "{:?} ", span.source_str())?;
+            write!(f, "{} ", span.source_str())?;
         }
         if let Some(ident) = &self.ident {
-            write!(f, "{:?} ", ident.inner)?;
+            write!(f, "{} ", ident.inner)?;
         }
         Ok(())
     }
@@ -257,10 +257,12 @@ pub struct Method {
     pub entry: BlockRef,
     pub return_ty: Type,
     pub params: Vec<(Ident, Type)>,
+
+    pub span: Span,
 }
 
 impl Method {
-    pub fn new(name: Ident, return_ty: Type, params: Vec<(Ident, Type)>) -> Self {
+    pub fn new(name: Ident, return_ty: Type, params: Vec<(Ident, Type)>, span: Span) -> Self {
         let entry = BlockRef(0);
         Self {
             name,
@@ -275,6 +277,7 @@ impl Method {
             entry,
             return_ty,
             params,
+            span,
         }
     }
 

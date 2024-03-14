@@ -171,7 +171,12 @@ impl<'a> MethodBuilder<'a> {
             let ty = Type::Primitive(PrimitiveType::from(&param.ty));
             params.push((name.clone(), ty));
         }
-        let method = Method::new(method_decl.name.clone(), return_ty, params.clone());
+        let method = Method::new(
+            method_decl.name.clone(),
+            return_ty,
+            params.clone(),
+            method_decl.body.span.clone(),
+        );
         let mut ret = Self {
             builder,
             method,
@@ -1091,7 +1096,7 @@ impl<'a> MethodBuilder<'a> {
     pub fn build(mut self) -> Method {
         self.method.annotate_block_mut(self.method.entry).str = Some("entry".to_string());
         // Don't introduce a new scope for the method body, will just use the parameter scope.
-        self.build_block_no_new_scope(&self.method_decl.body, self.method.entry);
+        self.build_block_no_new_scope(&self.method_decl.body.inner, self.method.entry);
         self.method
     }
 }

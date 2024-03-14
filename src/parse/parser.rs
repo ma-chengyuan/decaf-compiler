@@ -698,7 +698,7 @@ impl Parser {
                 params.push(MethodParam { ty, name });
             }
         }
-        let body = self.parse_block()?;
+        let body = parse_spanned!(self.parse_block());
         Ok(MethodDecl {
             name,
             return_ty,

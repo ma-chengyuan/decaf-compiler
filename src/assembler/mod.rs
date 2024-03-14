@@ -156,6 +156,11 @@ impl Assembler {
         // Align stack space to 16 bytes
         stack_space = (stack_space + 15) & !15;
 
+        self.emit_code(format!(
+            ".loc 0 {} {}",
+            method.span.start().line,
+            method.span.start().column
+        ));
         self.emit_code(format!("enterq ${}, $0", stack_space));
         // Save all callee-saved registers
         for reg in &["rbx", "rbp", "r12", "r13", "r14", "r15"] {
@@ -189,11 +194,11 @@ impl Assembler {
         // The entry block is assumed to be the first block in the method for now
         assert!(method.entry == method.iter_blocks().next().unwrap().0);
         for (block_ref, block) in method.iter_blocks() {
-            let annotation_comment = match method.get_block_annotation(&block_ref) {
-                Some(annotation) => annotation.to_string(),
-                None => "No annotation available".to_string(),
-            };
-            self.emit_annotated_label(&block_ref_to_label!(block_ref), &annotation_comment);
+            let block_annotation = method.get_block_annotation(&block_ref).unwrap();
+            self.emit_annotated_label(
+                &block_ref_to_label!(block_ref),
+                &block_annotation.to_string(),
+            );
 
             for (inst_ref, inst) in block.insts.iter().map(|iref| (*iref, method.inst(*iref))) {
                 if let Some(annotation) = method.get_inst_annotation(&inst_ref) {
@@ -203,7 +208,7 @@ impl Assembler {
                         &annotation.to_string(),
                     );
                 } else {
-                    self.emit_code(format!("# No annotation available for inst {}", inst_ref));
+                    self.emit_code(format!("# No annotation available for inst {}", inst));
                 }
                 match inst {
                     Inst::Add(lhs, rhs) | Inst::Sub(lhs, rhs) | Inst::Mul(lhs, rhs) => {
@@ -424,8 +429,26 @@ impl Assembler {
                         self.emit_code("call exit");
                     } else {
                         if let Some(ret) = ret {
+                            let inst_span = method
+                                .get_inst_annotation(ret)
+                                .unwrap()
+                                .span
+                                .clone()
+                                .unwrap();
+                            // note: this points to the return value, not the return statement :(
+                            self.emit_code(format!(
+                                ".loc 0 {} {}",
+                                inst_span.start().line,
+                                inst_span.start().column
+                            ));
                             self.emit_code(format!("movq {}, %rax", get_inst_ref_location(*ret)));
                         }
+
+                        self.emit_code(format!(
+                            ".loc 0 {} {}",
+                            method.span.end().line,
+                            method.span.end().column - 1 // exclusive
+                        ));
 
                         if method.name.inner.as_ref() == "main" {
                             assert!(ret.is_none());
