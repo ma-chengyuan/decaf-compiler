@@ -194,11 +194,14 @@ impl Assembler {
         // The entry block is assumed to be the first block in the method for now
         assert!(method.entry == method.iter_blocks().next().unwrap().0);
         for (block_ref, block) in method.iter_blocks() {
-            let block_annotation = method.get_block_annotation(&block_ref).unwrap();
-            self.emit_annotated_label(
-                &block_ref_to_label!(block_ref),
-                &block_annotation.to_string(),
-            );
+            if let Some(block_annotation) = method.get_block_annotation(&block_ref) {
+                self.emit_annotated_label(
+                    &block_ref_to_label!(block_ref),
+                    &block_annotation.to_string(),
+                );
+            } else {
+                self.emit_label(&block_ref_to_label!(block_ref));
+            }
 
             for (inst_ref, inst) in block.insts.iter().map(|iref| (*iref, method.inst(*iref))) {
                 if let Some(annotation) = method.get_inst_annotation(&inst_ref) {
