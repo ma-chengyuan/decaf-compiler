@@ -8,7 +8,7 @@ use crate::parse::ast::{Initializer, RuntimeLiteral};
 
 use super::{
     error::SemanticError,
-    types::{PrimitiveType, Type, INT_SIZE, BOOL_SIZE},
+    types::{PrimitiveType, Type, BOOL_SIZE, INT_SIZE},
 };
 
 /// A constant value in the intermediate representation.

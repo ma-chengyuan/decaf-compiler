@@ -23,33 +23,42 @@ fn get_writer(output: &Option<std::path::PathBuf>) -> Box<dyn std::io::Write> {
 
 fn main() {
     let args = utils::cli::parse();
-    let _input = std::fs::read_to_string(&args.input).expect("Filename is incorrect.");
+    if args.version {
+        println!("1.0.0");
+        return;
+    }
+    let _input =
+        std::fs::read_to_string(&args.input.clone().unwrap()).expect("Filename is incorrect.");
 
     if args.debug {
         eprintln!(
             "Filename: {:?}\nDebug: {:?}\nOptimizations: {:?}\nOutput File: {:?}\nTarget: {:?}",
-            args.input, args.debug, args.opt, args.output, args.target
+            args.input.clone().unwrap(),
+            args.debug,
+            args.opt,
+            args.output,
+            args.target
         );
     }
 
     // Use writeln!(writer, "template string") to write to stdout ot file.
     let writer = get_writer(&args.output);
     match args.target {
-        utils::cli::CompilerAction::Default => {
-            panic!("Invalid target");
-        }
         utils::cli::CompilerAction::Scan => main_scan(args, writer),
         utils::cli::CompilerAction::Parse => main_parse(args, writer),
         utils::cli::CompilerAction::Inter => main_inter(args, writer),
-        utils::cli::CompilerAction::Assembly => main_assembler(args, writer),
+        utils::cli::CompilerAction::Default | utils::cli::CompilerAction::Assembly => {
+            main_assembler(args, writer)
+        }
     }
 }
 
 fn main_scan(args: utils::cli::Args, mut writer: Box<dyn std::io::Write>) {
-    let content = std::fs::read_to_string(&args.input).expect("error reading file");
+    let content =
+        std::fs::read_to_string(&args.input.clone().unwrap()).expect("error reading file");
     let chars: Rc<[char]> = content.chars().collect::<Vec<_>>().into();
     let source = Rc::new(Source {
-        filename: args.input.to_string_lossy().to_string(),
+        filename: args.input.clone().unwrap().to_string_lossy().to_string(),
         content: chars.clone(),
     });
     let mut lexer = Scanner::new(source);
@@ -87,7 +96,7 @@ fn main_scan(args: utils::cli::Args, mut writer: Box<dyn std::io::Write>) {
 }
 
 fn main_parse(args: utils::cli::Args, _writer: Box<dyn std::io::Write>) {
-    let (tokens, errors) = scan(args.input);
+    let (tokens, errors) = scan(args.input.clone().unwrap());
     dump_errors_and_exit(errors);
     let mut parser = Parser::new(tokens);
     let (_, errors) = parser.parse_program();
@@ -96,7 +105,7 @@ fn main_parse(args: utils::cli::Args, _writer: Box<dyn std::io::Write>) {
 
 fn main_inter(args: utils::cli::Args, mut writer: Box<dyn std::io::Write>) {
     // TODO: Deduplicate this code with main_parse
-    let (tokens, errors) = scan(args.input);
+    let (tokens, errors) = scan(args.input.clone().unwrap());
     dump_errors_and_exit(errors);
     let mut parser = Parser::new(tokens);
     let (ast, errors) = parser.parse_program();
@@ -111,7 +120,7 @@ fn main_inter(args: utils::cli::Args, mut writer: Box<dyn std::io::Write>) {
 
 fn main_assembler(args: utils::cli::Args, mut writer: Box<dyn std::io::Write>) {
     // TODO: Deduplicate
-    let (tokens, errors) = scan(args.input);
+    let (tokens, errors) = scan(args.input.clone().unwrap());
     dump_errors_and_exit(errors);
     let mut parser = Parser::new(tokens);
     let (ast, errors) = parser.parse_program();

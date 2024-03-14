@@ -28,7 +28,7 @@ pub struct Args {
     pub target: CompilerAction,
 
     /// write output to
-    #[clap(short, long, value_name = "outname")]
+    #[clap(short = 'o', long, value_name = "outname")]
     pub output: Option<std::path::PathBuf>,
 
     /// Perform the listed optimizations
@@ -46,7 +46,17 @@ pub struct Args {
     pub debug: bool,
 
     /// Decaf file
-    pub input: std::path::PathBuf,
+    pub input: Option<std::path::PathBuf>,
+
+    // stuff for godbolt
+    #[arg(long, default_value_t = false)]
+    pub version: bool,
+
+    #[arg(short = 'g', long, default_value_t = false)]
+    pub emit_debug_symbols: bool,
+
+    #[arg(short = 'S', long, default_value_t = false)]
+    pub output_assembly: bool,
 }
 
 pub fn parse() -> Args {
