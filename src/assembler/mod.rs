@@ -39,6 +39,11 @@ impl Assembler {
         self.code.push(format!("    {}", code));
     }
 
+    #[allow(dead_code)]
+    fn emit_annotated_code<T: std::fmt::Display>(&mut self, code: T, annotation: &str) {
+        self.code.push(format!("    {}     # {}", code, annotation));
+    }
+
     fn emit_label(&mut self, label: &str) {
         self.code.push(format!("{}:", label));
     }
@@ -62,7 +67,7 @@ impl Assembler {
         self.emit_data_label("index_out_of_bounds_msg");
         self.emit_data_code(".string \"Error: index out of bounds on line %d. Array length is %d; queried index is %d.\\n\"");
 
-        let mut output = String::from(".data\n");
+        let mut output = String::from(".file 0 \"myfile.dcf\"\n.data\n");
         for data in self.data.iter() {
             output.push_str(data.as_str());
             output.push('\n');
@@ -186,6 +191,15 @@ impl Assembler {
             self.emit_annotated_label(&block_ref_to_label!(block_ref), &annotation_comment);
 
             for (inst_ref, inst) in block.insts.iter().map(|iref| (*iref, method.inst(*iref))) {
+                if let Some(annotation) = method.get_inst_annotation(&inst_ref) {
+                    let start_loc = annotation.span.clone().unwrap().start().to_owned();
+                    self.emit_annotated_code(
+                        format!(".loc 0 {} {}", start_loc.line, start_loc.column),
+                        &annotation.to_string(),
+                    );
+                } else {
+                    self.emit_code(format!("# No annotation available for inst {}", inst_ref));
+                }
                 match inst {
                     Inst::Add(lhs, rhs) | Inst::Sub(lhs, rhs) | Inst::Mul(lhs, rhs) => {
                         let inst_name = match inst {
@@ -218,16 +232,15 @@ impl Assembler {
                             get_inst_ref_location(inst_ref)
                         ));
                     }
-                    Inst::Neg(var) | Inst::Not(var) => {
+                    Inst::Neg(var) => {
                         self.emit_code(format!("movq {}, %rax", get_inst_ref_location(*var)));
-                        self.emit_code(format!(
-                            "{}q %rax",
-                            match inst {
-                                Inst::Neg(_) => "neg",
-                                Inst::Not(_) => "not",
-                                _ => unreachable!(),
-                            }
-                        ));
+                        self.emit_code("negq %rax");
+                        self.emit_code(format!("movq %rax, {}", get_inst_ref_location(inst_ref)));
+                    }
+                    Inst::Not(var) => {
+                        self.emit_code(format!("cmpq $0, {}", get_inst_ref_location(*var)));
+                        self.emit_code("sete %al");
+                        self.emit_code(format!("movzbq %al, %rax"));
                         self.emit_code(format!("movq %rax, {}", get_inst_ref_location(inst_ref)));
                     }
                     Inst::Eq(lhs, rhs) => {
@@ -392,6 +405,10 @@ impl Assembler {
                 }
             }
 
+            self.emit_code(format!(
+                "# Terminating block {}",
+                block_ref_to_label!(block_ref)
+            ));
             match &block.term {
                 Terminator::Return(ret) => {
                     if let Some(ret) = ret {
