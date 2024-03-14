@@ -53,6 +53,9 @@ impl Assembler {
             self.assemble_method(method);
         }
 
+        self.emit_data_label("index_out_of_bounds_msg");
+        self.emit_data_code(".string \"Error: index out of bounds\\n\"");
+
         let mut output = String::from(".data\n");
         for data in self.data.iter() {
             output.push_str(data.as_str());
@@ -271,7 +274,6 @@ impl Assembler {
                     let str_name = format!("str_{}", self.data.len());
                     self.emit_data_label(&str_name);
                     self.emit_data_code(format!(".string {:?}", s));
-                    self.emit_data_code(".align 16");
                     self.emit_code(format!("leaq {}(%rip), %rax", str_name));
                     self.emit_code(format!("movq %rax, {}", get_inst_ref_location(inst_ref)));
                 }
@@ -386,9 +388,11 @@ impl Assembler {
         self.emit_code(format!("cmpq ${}, %rax", length));
         self.emit_code(format!("jl {}", pass_branch));
         self.emit_label(&fail_branch);
+        // print an error message
+        self.emit_code("leaq index_out_of_bounds_msg(%rip), %rdi");
+        self.emit_code("call printf");
         // Call exit(-1)
         self.emit_code("movq $-1, %rdi");
-        // TODO: use a more descriptive error message
         self.emit_code("call exit");
         self.emit_label(&pass_branch);
     }
