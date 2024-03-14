@@ -1034,6 +1034,8 @@ impl<'a> MethodBuilder<'a> {
                     args: arg_insts,
                 },
             );
+            self.method.annotate_inst_mut(call_inst).str = Some(String::from("call"));
+            self.method.annotate_inst_mut(call_inst).span = Some(call.name.span.clone());
             (cur_block, call_inst, ty)
         } else if self
             .builder
@@ -1063,6 +1065,8 @@ impl<'a> MethodBuilder<'a> {
                     args: arg_insts,
                 },
             );
+            self.method.annotate_inst_mut(call_inst).str = Some(String::from("call"));
+            self.method.annotate_inst_mut(call_inst).span = Some(call.name.span.clone());
             (cur_block, call_inst, Type::int())
         } else {
             self.emit_error(SemanticError::UnknownMethod(call.name.clone()));
