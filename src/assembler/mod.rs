@@ -261,42 +261,33 @@ impl Assembler {
                     Inst::LoadConst(value) => {
                         self.load_int_or_bool_const(value, &get_inst_ref_location(inst_ref));
                     }
-
-                    Inst::Call {
-                        method: callee_name,
-                        args,
-                    } => {
-                        for (arg_idx, arg_ref) in args.iter().enumerate().take(6) {
-                            self.emit_code(format!(
-                                "movq {}, %{}",
-                                get_inst_ref_location(*arg_ref),
-                                arg_registers[arg_idx]
-                            ));
+                    Inst::Load(addr) => {
+                        match addr {
+                            Address::Global(name) => {
+                                self.emit_code(format!("movq {}(%rip), %rax", name));
+                            }
+                            Address::Local(stack_slot) => {
+                                self.emit_code(format!(
+                                    "movq {}(%rbp), %rax",
+                                    stack_slot_to_offset[stack_slot]
+                                ));
+                            }
                         }
-                        let n_remaining_args = args.len().saturating_sub(6);
-                        let mut stack_space_for_args = 0;
-                        if n_remaining_args % 2 == 1 {
-                            // Align stack to 16 bytes
-                            self.emit_code("subq $8, %rsp".to_string());
-                            stack_space_for_args += 8;
-                        }
-                        for arg_ref in args.iter().skip(6).rev() {
-                            self.emit_code(format!("pushq {}", get_inst_ref_location(*arg_ref)));
-                            stack_space_for_args += 8;
-                        }
-                        self.emit_code(format!("call {}", callee_name));
-                        if stack_space_for_args > 0 {
-                            self.emit_code(format!("addq ${}, %rsp", stack_space_for_args));
-                        }
-                        let tmp = get_inst_ref_location(inst_ref);
-                        self.emit_code(format!("movq %rax, {}", tmp));
-                    }
-                    Inst::LoadStringLiteral(s) => {
-                        let str_name = format!("str_{}", self.data.len());
-                        self.emit_data_label(&str_name);
-                        self.emit_data_code(format!(".string {:?}", s));
-                        self.emit_code(format!("leaq {}(%rip), %rax", str_name));
                         self.emit_code(format!("movq %rax, {}", get_inst_ref_location(inst_ref)));
+                    }
+                    Inst::Store { addr, value } => {
+                        self.emit_code(format!("movq {}, %rax", get_inst_ref_location(*value)));
+                        match addr {
+                            Address::Global(name) => {
+                                self.emit_code(format!("movq %rax, {}(%rip)", name));
+                            }
+                            Address::Local(stack_slot) => {
+                                self.emit_code(format!(
+                                    "movq %rax, {}(%rbp)",
+                                    stack_slot_to_offset[stack_slot]
+                                ));
+                            }
+                        }
                     }
                     Inst::LoadArray { addr, index } => {
                         // Do bound check first
@@ -360,35 +351,44 @@ impl Assembler {
                             }
                         }
                     },
-                    Inst::Load(addr) => {
-                        match addr {
-                            Address::Global(name) => {
-                                self.emit_code(format!("movq {}(%rip), %rax", name));
-                            }
-                            Address::Local(stack_slot) => {
-                                self.emit_code(format!(
-                                    "movq {}(%rbp), %rax",
-                                    stack_slot_to_offset[stack_slot]
-                                ));
-                            }
+                    Inst::Call {
+                        method: callee_name,
+                        args,
+                    } => {
+                        for (arg_idx, arg_ref) in args.iter().enumerate().take(6) {
+                            self.emit_code(format!(
+                                "movq {}, %{}",
+                                get_inst_ref_location(*arg_ref),
+                                arg_registers[arg_idx]
+                            ));
                         }
+                        let n_remaining_args = args.len().saturating_sub(6);
+                        let mut stack_space_for_args = 0;
+                        if n_remaining_args % 2 == 1 {
+                            // Align stack to 16 bytes
+                            self.emit_code("subq $8, %rsp".to_string());
+                            stack_space_for_args += 8;
+                        }
+                        for arg_ref in args.iter().skip(6).rev() {
+                            self.emit_code(format!("pushq {}", get_inst_ref_location(*arg_ref)));
+                            stack_space_for_args += 8;
+                        }
+                        self.emit_code(format!("call {}", callee_name));
+                        if stack_space_for_args > 0 {
+                            self.emit_code(format!("addq ${}, %rsp", stack_space_for_args));
+                        }
+                        let tmp = get_inst_ref_location(inst_ref);
+                        self.emit_code(format!("movq %rax, {}", tmp));
+                    }
+                    Inst::LoadStringLiteral(s) => {
+                        let str_name = format!("str_{}", self.data.len());
+                        self.emit_data_label(&str_name);
+                        self.emit_data_code(format!(".string {:?}", s));
+                        self.emit_code(format!("leaq {}(%rip), %rax", str_name));
                         self.emit_code(format!("movq %rax, {}", get_inst_ref_location(inst_ref)));
                     }
-                    Inst::Store { addr, value } => {
-                        self.emit_code(format!("movq {}, %rax", get_inst_ref_location(*value)));
-                        match addr {
-                            Address::Global(name) => {
-                                self.emit_code(format!("movq %rax, {}(%rip)", name));
-                            }
-                            Address::Local(stack_slot) => {
-                                self.emit_code(format!(
-                                    "movq %rax, {}(%rbp)",
-                                    stack_slot_to_offset[stack_slot]
-                                ));
-                            }
-                        }
-                    }
-                    x => todo!("{:?}", x),
+                    Inst::Phi(_) => unimplemented!("Phi nodes not supported in assembly"),
+                    Inst::Illegal => unreachable!(),
                 }
             }
 
