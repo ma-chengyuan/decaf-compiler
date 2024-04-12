@@ -19,7 +19,16 @@ pub enum CompilerAction {
 }
 
 #[derive(Clone, clap::ValueEnum, Debug, PartialEq, Eq, Hash)]
-pub enum Optimization {}
+pub enum Optimization {
+    #[clap(name = "cp")]
+    CopyPropagation,
+    #[clap(name = "dce")]
+    DeadCodeElimination,
+    #[clap(name = "cse")]
+    CommonSubexpressionElimination,
+    #[clap(name = "all")]
+    All,
+}
 
 #[derive(Parser, Debug)]
 pub struct Args {

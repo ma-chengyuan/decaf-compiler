@@ -36,8 +36,9 @@ class TestCase:
             " " * (CONSOLE_WIDTH - len(self.name) - 16)
             + f"{Color.GREEN}{Color.BOLD}EXPECTED ERROR{Color.END}"
         )
-        print("\n".join("    " + s for s in stderr.strip().splitlines()))
-        print("=" * CONSOLE_WIDTH)
+        if stderr:
+            print("\n".join("    " + s for s in stderr.strip().splitlines()))
+            print("=" * CONSOLE_WIDTH)
 
     def unexpected_pass(self):
         print(

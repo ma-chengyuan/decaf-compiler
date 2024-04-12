@@ -128,13 +128,14 @@ fn main_assembler(args: utils::cli::Args, mut writer: Box<dyn std::io::Write>) {
     dump_errors_and_exit(errors);
     let mut checker = IrBuilder::new();
     let res = checker.check_program(&ast);
-    let program = match res {
+    let mut program = match res {
         Ok(program) => program,
         Err(errors) => {
             dump_errors_and_exit(errors);
             unreachable!()
         }
     };
+    program = opt::optimize(program, &args.opt);
     let mut assembler = Assembler::new(program);
     let res = assembler.assemble(args.input.clone().unwrap().as_os_str().to_str().unwrap());
     writeln!(writer, "{}", res).unwrap();

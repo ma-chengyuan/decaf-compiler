@@ -5,7 +5,7 @@ use crate::{
     scan::location::Spanned,
 };
 
-use super::error::SemanticError;
+use super::{constant::Const, error::SemanticError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum PrimitiveType {
@@ -106,6 +106,17 @@ impl Type {
                     length: elements.inner.len(),
                 })
             }
+        }
+    }
+
+    pub fn from_const(value: &Const) -> Self {
+        match value {
+            Const::Int(_) => Self::int(),
+            Const::Bool(_) => Self::bool(),
+            Const::Array(elems) => Self::Array {
+                base: Box::new(Self::from_const(&elems[0])),
+                length: elems.len(),
+            },
         }
     }
 }

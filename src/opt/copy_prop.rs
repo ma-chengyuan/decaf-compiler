@@ -47,7 +47,7 @@ pub fn propagate_copies(method: &mut Method) {
             let term = &mut block.term;
             term.for_each_inst_ref(|inst_ref| *inst_ref = orig[inst_ref.0]);
         }
-        for block in (0..method.n_blocks()).map(BlockRef) {
+        for block in method.iter_block_refs() {
             for inst in method.block(block).insts.clone() {
                 let Inst::Phi(map) = method.inst_mut(inst) else {
                     break; // All phis are at the beginning of the block, so break at first non-phi.

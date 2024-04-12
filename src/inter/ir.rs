@@ -1,13 +1,17 @@
 use core::fmt;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::{
+    opt::{for_each_successor, predecessors},
     parse::ast::{Ident, IdentStr},
     scan::location::Span,
     utils::formatting::{Table, TableRow},
 };
 
-use super::{constant::Const, types::Type};
+use super::{
+    constant::Const,
+    types::{PrimitiveType, Type},
+};
 
 /// An opaque reference to an SSA instruction.
 /// Instructions represent primitive types.
@@ -96,9 +100,6 @@ pub enum Inst {
     /// Load a constant value (primitive type only!)
     LoadConst(Const),
 
-    // Load function arguments.
-    LoadArg(usize),
-
     // Loads and stores are designed to not take arbitrary addresses, because
     // Decaf does not support pointer arithmetic. This is a design decision to
     // simplify the language and the compiler.
@@ -178,7 +179,6 @@ impl Inst {
             }
             Inst::LoadConst(_)
             | Inst::Load(_)
-            | Inst::LoadArg(_)
             | Inst::Initialize { .. }
             | Inst::LoadStringLiteral(_)
             | Inst::Illegal => {}
@@ -223,7 +223,6 @@ impl fmt::Display for Inst {
                 write!(f, " }}")
             }
             Inst::Copy(inst) => write!(f, "{}", inst),
-            Inst::LoadArg(i) => write!(f, "load_arg {}", i),
             Inst::Add(lhs, rhs) => write!(f, "add {}, {}", lhs, rhs),
             Inst::Sub(lhs, rhs) => write!(f, "sub {}, {}", lhs, rhs),
             Inst::Mul(lhs, rhs) => write!(f, "mul {}, {}", lhs, rhs),
@@ -486,12 +485,52 @@ impl Method {
         BlockIter(self.blocks.iter().enumerate())
     }
 
+    /// Iterates over all block references.
+    /// Prefer this over iter_blocks if you don't want method to be borrowed
+    /// immutably.
+    pub fn iter_block_refs(&self) -> impl Iterator<Item = BlockRef> {
+        (0..self.n_blocks()).map(BlockRef)
+    }
+
+    /// Merge blocks that have a single predecessor and a single successor.
+    /// E.g. if block A has a single successor B and block B has a single
+    /// predecessor A.
+    pub fn merge_blocks(&mut self) {
+        let predecessors = predecessors(self);
+        let mut next: Vec<Option<BlockRef>> = vec![None; self.n_blocks()];
+        let mut prev: Vec<Option<BlockRef>> = vec![None; self.n_blocks()];
+        for block_ref in self
+            .iter_block_refs()
+            .filter(|b| predecessors[b.0].len() == 1)
+        {
+            let predecessor = predecessors[block_ref.0].iter().next().copied().unwrap();
+            let mut can_merge = true;
+            for_each_successor(self, predecessor, |succ| {
+                can_merge &= succ == block_ref;
+            });
+            if can_merge {
+                next[predecessor.0] = Some(block_ref);
+                prev[block_ref.0] = Some(predecessor);
+            }
+        }
+        for block_ref in self.iter_block_refs().filter(|b| prev[b.0].is_none()) {
+            let mut cur = block_ref;
+            while let Some(next_block) = next[cur.0] {
+                let next_insts = std::mem::take(&mut self.block_mut(next_block).insts);
+                self.block_mut(block_ref).insts.extend(next_insts);
+                cur = next_block;
+            }
+            if cur != block_ref {
+                self.block_mut(block_ref).term = self.block(cur).term.clone();
+            }
+        }
+        self.remove_unreachable();
+    }
+
     /// Removes unreachable blocks and unreferenced instructions.
     ///
     /// Invalidates all references to blocks and instructions!
     pub fn remove_unreachable(&mut self) {
-        use crate::opt::for_each_successor;
-
         let mut visited = vec![false; self.n_blocks()];
 
         fn dfs(method: &Method, visited: &mut Vec<bool>, block: BlockRef) {
@@ -628,6 +667,70 @@ impl<'a> Iterator for BlockIter<'a> {
 
 const INDENT: &str = "   ";
 
+impl Method {
+    pub fn dump_graphviz(&self) -> String {
+        let mut output = "digraph G {\n".to_string();
+        output.push_str("  rankdir=TD;\n");
+        output.push_str("  node [shape=box fontname=Courier];\n");
+
+        let mut stack_slots = Table::new();
+        for (i, stack_slot) in self.stack_slots.iter().enumerate() {
+            stack_slots.add_row(
+                TableRow::new()
+                    .add(StackSlotRef(i))
+                    .add(&stack_slot.ty)
+                    .add(&stack_slot.name.inner),
+            );
+        }
+        output.push_str(
+            format!(
+                "  stack_slots [label={}];\n",
+                format!("{:?}", stack_slots.to_string()).replace("\\n", "\\l")
+            )
+            .as_str(),
+        );
+        for (i, block) in self.blocks.iter().enumerate() {
+            let mut block_label = format!("{}:", BlockRef(i));
+            if let Some(annotation) = self.block_annotations.get(&BlockRef(i)) {
+                block_label.push_str(format!(" ; {}", annotation).as_str());
+            }
+            block_label.push('\n');
+            let mut insts = Table::new();
+            for inst in &block.insts {
+                if *inst == InstRef::invalid() {
+                    continue;
+                }
+                let mut row = TableRow::new().add(inst).add('=').add(self.inst(*inst));
+                if let Some(annotation) = self.inst_annotations.get(inst) {
+                    row = row.add(format!("; {}", annotation));
+                }
+                insts.add_row(row);
+            }
+            block_label.push_str(format!("{}{}", insts, block.term).as_str());
+            // Escape newlines in the block label and replace to \l to left-align.
+            let block_label = format!("{:?}", block_label).replace("\\n", "\\l");
+            output.push_str(format!("  {} [label={}];\n", BlockRef(i), block_label).as_str());
+        }
+        for (block_ref, block) in self.iter_blocks() {
+            match block.term {
+                Terminator::Jump(target) => {
+                    output.push_str(format!("  {} -> {};\n", block_ref, target).as_str());
+                }
+                Terminator::CondJump { true_, false_, .. } => {
+                    output
+                        .push_str(format!("  {} -> {} [label=true];\n", block_ref, true_).as_str());
+                    output.push_str(
+                        format!("  {} -> {} [label=false];\n", block_ref, false_).as_str(),
+                    );
+                }
+                _ => {}
+            }
+        }
+        output.push('}');
+        output
+    }
+}
+
 impl fmt::Display for Method {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{} {}(", self.return_ty, self.name.inner)?;
@@ -690,6 +793,79 @@ pub struct Program {
     pub imports: HashMap<String, Ident>,
     pub methods: HashMap<String, Method>,
     pub globals: HashMap<String, GlobalVar>,
+}
+
+impl Program {
+    /// Infers the type of an address.
+    pub fn infer_address_type<'a>(&'a self, method: &'a Method, addr: &Address) -> &'a Type {
+        match addr {
+            Address::Local(stack_slot) => &method.stack_slot(*stack_slot).ty,
+            Address::Global(name) => &self.globals[&name.to_string()].ty,
+        }
+    }
+
+    /// Infers the type of an instruction. This has to be done at program level
+    /// (not method level) because an instruction may call into other functions
+    /// to load globals and we need the global symbol table to infer the type of
+    /// the instruction.
+    pub fn infer_inst_type(&self, method: &Method, inst_ref: InstRef) -> Type {
+        let mut visited = HashSet::new();
+        // A recursive helper. Recursion is needed because sometimes the type of
+        // an instruction depends on the type of another instruction. E.g. copy
+        // and phi
+        fn infer_inner(
+            program: &Program,
+            method: &Method,
+            inst_ref: InstRef,
+            visited: &mut HashSet<InstRef>,
+        ) -> Option<Type> {
+            // Return None to stop recursion if we encounter a cycle.
+            if visited.contains(&inst_ref) {
+                return None;
+            }
+            visited.insert(inst_ref);
+            let result = match method.inst(inst_ref) {
+                Inst::Add(_, _)
+                | Inst::Sub(_, _)
+                | Inst::Mul(_, _)
+                | Inst::Div(_, _)
+                | Inst::Mod(_, _)
+                | Inst::Neg(_) => Some(Type::int()),
+                Inst::Eq(_, _)
+                | Inst::Neq(_, _)
+                | Inst::Less(_, _)
+                | Inst::LessEq(_, _)
+                | Inst::Not(_) => Some(Type::int()),
+                Inst::Copy(src) => infer_inner(program, method, *src, visited),
+                Inst::Load(addr) => Some(program.infer_address_type(method, addr).clone()),
+                Inst::LoadArray { addr, .. } => match program.infer_address_type(method, addr) {
+                    Type::Array { base, .. } => Some((**base).clone()),
+                    _ => unreachable!(),
+                },
+                Inst::LoadConst(c) => Some(Type::from_const(c)),
+                Inst::LoadStringLiteral(_) => Some(Type::int()),
+                Inst::Call { method, .. } => Some(
+                    program
+                        .methods
+                        .get(&method.to_string())
+                        .map(|m| m.return_ty.clone())
+                        .unwrap_or(Type::int()), // External calls return int
+                ),
+                // No IR is allowed to depend on the return value of these instructions
+                Inst::Store { .. } | Inst::StoreArray { .. } | Inst::Initialize { .. } => {
+                    Some(Type::Void)
+                }
+                Inst::Phi(map) => map
+                    .values()
+                    .cloned()
+                    .find_map(|src| infer_inner(program, method, src, visited)),
+                Inst::Illegal => unreachable!(),
+            };
+            visited.remove(&inst_ref);
+            result
+        }
+        infer_inner(self, method, inst_ref, &mut visited).unwrap()
+    }
 }
 
 impl fmt::Display for Program {

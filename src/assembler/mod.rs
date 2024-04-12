@@ -107,49 +107,8 @@ impl Assembler {
             };
         }
 
-        fn address_to_ty<'a>(prog: &'a Program, method: &'a Method, addr: &Address) -> &'a Type {
-            match addr {
-                Address::Local(stack_slot) => &method.stack_slot(*stack_slot).ty,
-                Address::Global(name) => &prog.globals[&name.to_string()].ty,
-            }
-        }
-
-        fn infer_inst_size(program: &Program, method: &Method, inst: InstRef) -> usize {
-            match method.inst(inst) {
-                Inst::Add(_, _)
-                | Inst::Sub(_, _)
-                | Inst::Mul(_, _)
-                | Inst::Div(_, _)
-                | Inst::Mod(_, _)
-                | Inst::Neg(_) => INT_SIZE,
-                Inst::Eq(_, _)
-                | Inst::Neq(_, _)
-                | Inst::Less(_, _)
-                | Inst::LessEq(_, _)
-                | Inst::Not(_) => BOOL_SIZE,
-                Inst::Copy(inst) => infer_inst_size(program, method, *inst),
-                Inst::Load(addr) => address_to_ty(program, method, addr).size(),
-                Inst::LoadArray { addr, .. } => match address_to_ty(program, method, addr) {
-                    Type::Array { base, .. } => base.size(),
-                    _ => unreachable!(),
-                },
-                Inst::LoadConst(c) => c.size(),
-                Inst::LoadStringLiteral(_) => INT_SIZE,
-                Inst::Call { method, .. } => program
-                    .methods
-                    .get(&method.to_string())
-                    .map(|m| m.return_ty.size())
-                    .unwrap_or(INT_SIZE),
-                // No IR is allowed to depend on the return value of these instructions
-                Inst::Store { .. } | Inst::StoreArray { .. } | Inst::Initialize { .. } => 0,
-                Inst::LoadArg(i) => method.params[*i].1.size(),
-                Inst::Phi(_) => unimplemented!("Phi nodes not supported in assembly"),
-                Inst::Illegal => unreachable!(),
-            }
-        }
-
         for (inst_ref, _) in method.iter_insts() {
-            let size = infer_inst_size(&self.program, method, inst_ref);
+            let size = self.program.infer_inst_type(method, inst_ref).size();
             stack_space += size as i64;
             // todo: should this line go here or at the top of the for loop?
             inst_to_offset.insert(inst_ref, -stack_space);
@@ -162,7 +121,10 @@ impl Assembler {
             method.span.start().line,
             method.span.start().column
         ));
-        self.emit_code(format!("enterq ${}, $0", stack_space));
+        self.emit_code("push %rbp".to_string());
+        self.emit_code("movq %rsp, %rbp".to_string());
+        self.emit_code(format!("subq ${}, %rsp", stack_space));
+        // self.emit_code(format!("enterq ${}, $0", stack_space));
         // Save all callee-saved registers
         for reg in &["rbx", "rbp", "r12", "r13", "r14", "r15"] {
             self.emit_code(format!("pushq %{}", reg));
@@ -206,24 +168,19 @@ impl Assembler {
 
             for (inst_ref, inst) in block.insts.iter().map(|iref| (*iref, method.inst(*iref))) {
                 if let Some(annotation) = method.get_inst_annotation(&inst_ref) {
-                    let start_loc = annotation.span.clone().unwrap().start().to_owned();
-                    self.emit_annotated_code(
-                        format!(".loc 0 {} {}", start_loc.line, start_loc.column),
-                        &annotation.to_string(),
-                    );
+                    if let Some(span) = &annotation.span {
+                        let start_loc = span.start().to_owned();
+                        self.emit_annotated_code(
+                            format!(".loc 0 {} {}", start_loc.line, start_loc.column),
+                            &annotation.to_string(),
+                        );
+                    }
                 } else {
                     self.emit_code(format!("# No annotation available for inst {}", inst));
                 }
                 match inst {
                     Inst::Copy(src) => {
                         self.emit_code(format!("movq {}, %rax", get_inst_ref_location(*src)));
-                        self.emit_code(format!("movq %rax, {}", get_inst_ref_location(inst_ref)));
-                    }
-                    Inst::LoadArg(i) => {
-                        self.emit_code(format!(
-                            "movq {}(%rbp), %rax",
-                            stack_slot_to_offset[&StackSlotRef(*i)]
-                        ));
                         self.emit_code(format!("movq %rax, {}", get_inst_ref_location(inst_ref)));
                     }
                     Inst::Add(lhs, rhs) | Inst::Sub(lhs, rhs) | Inst::Mul(lhs, rhs) => {
@@ -330,11 +287,12 @@ impl Assembler {
                     Inst::LoadArray { addr, index } => {
                         // Do bound check first
                         self.emit_code(format!("movq {}, %rax", get_inst_ref_location(*index)));
-                        let (length, elem_size) = match address_to_ty(&self.program, method, addr) {
-                            Type::Array { length, base } => (*length, base.size()),
-                            _ => unreachable!(),
-                        };
-                        self.emit_bounds_check(length, method.get_inst_annotation(index).unwrap());
+                        let (length, elem_size) =
+                            match self.program.infer_address_type(method, addr) {
+                                Type::Array { length, base } => (*length, base.size()),
+                                _ => unreachable!(),
+                            };
+                        self.emit_bounds_check(length, method.get_inst_annotation(index));
                         match addr {
                             Address::Global(name) => {
                                 self.emit_code(format!(
@@ -353,11 +311,12 @@ impl Assembler {
                     }
                     Inst::StoreArray { addr, index, value } => {
                         self.emit_code(format!("movq {}, %rax", get_inst_ref_location(*index)));
-                        let (length, elem_size) = match address_to_ty(&self.program, method, addr) {
-                            Type::Array { length, base } => (*length, base.size()),
-                            _ => unreachable!(),
-                        };
-                        self.emit_bounds_check(length, method.get_inst_annotation(index).unwrap());
+                        let (length, elem_size) =
+                            match self.program.infer_address_type(method, addr) {
+                                Type::Array { length, base } => (*length, base.size()),
+                                _ => unreachable!(),
+                            };
+                        self.emit_bounds_check(length, method.get_inst_annotation(index));
                         self.emit_code(format!("movq {}, %rcx", get_inst_ref_location(*value)));
                         match addr {
                             Address::Global(name) => {
@@ -415,8 +374,17 @@ impl Assembler {
                         if stack_space_for_args > 0 {
                             self.emit_code(format!("addq ${}, %rsp", stack_space_for_args));
                         }
-                        let tmp = get_inst_ref_location(inst_ref);
-                        self.emit_code(format!("movq %rax, {}", tmp));
+                        let returns_value = match self.program.methods.get(&callee_name.to_string())
+                        {
+                            Some(method) => method.return_ty != Type::Void,
+                            None => true,
+                        };
+                        if returns_value {
+                            self.emit_code(format!(
+                                "movq %rax, {}",
+                                get_inst_ref_location(inst_ref)
+                            ));
+                        }
                     }
                     Inst::LoadStringLiteral(s) => {
                         let str_name = format!("str_{}", self.data.len());
@@ -444,18 +412,16 @@ impl Assembler {
                         self.emit_code("call exit");
                     } else {
                         if let Some(ret) = ret {
-                            let inst_span = method
-                                .get_inst_annotation(ret)
-                                .unwrap()
-                                .span
-                                .clone()
-                                .unwrap();
-                            // note: this points to the return value, not the return statement :(
-                            self.emit_code(format!(
-                                ".loc 0 {} {}",
-                                inst_span.start().line,
-                                inst_span.start().column
-                            ));
+                            if let Some(span) =
+                                method.get_inst_annotation(ret).and_then(|a| a.span.clone())
+                            {
+                                // note: this points to the return value, not the return statement :(
+                                self.emit_code(format!(
+                                    ".loc 0 {} {}",
+                                    span.start().line,
+                                    span.start().column
+                                ));
+                            }
                             self.emit_code(format!("movq {}, %rax", get_inst_ref_location(*ret)));
                         }
 
@@ -497,7 +463,7 @@ impl Assembler {
     }
 
     /// Checks if %rax is in [0, length) and panics if not
-    fn emit_bounds_check(&mut self, length: usize, inst_annotation: &Annotation) {
+    fn emit_bounds_check(&mut self, length: usize, inst_annotation: Option<&Annotation>) {
         let fail_branch = format!("bound_check_fail_{}", self.code.len());
         let pass_branch = format!("bound_check_pass_{}", self.code.len());
         self.emit_code("cmpq $0, %rax");
@@ -510,7 +476,10 @@ impl Assembler {
         self.emit_code("leaq index_out_of_bounds_msg(%rip), %rdi");
         self.emit_code(format!(
             "movq ${}, %rsi",
-            inst_annotation.span.clone().unwrap().start().line
+            inst_annotation
+                .and_then(|a| a.span.clone())
+                .map(|s| s.start().line)
+                .unwrap_or(0) // TODO: better error handling
         ));
         self.emit_code(format!("movq ${}, %rdx", length));
         self.emit_code("movq %rax, %rcx");

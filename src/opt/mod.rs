@@ -1,10 +1,16 @@
 use std::collections::HashSet;
 
-use crate::inter::ir::{BlockRef, Method, Terminator};
+use crate::{
+    inter::ir::{BlockRef, Method, Program, Terminator},
+    opt::ssa::construct_ssa,
+    utils::cli::Optimization,
+};
+
+use self::ssa::destruct_ssa;
 
 pub mod copy_prop;
 pub mod dom;
-pub mod into_ssa;
+pub mod ssa;
 
 // Common graph algorithms for control flow graphs.
 
@@ -81,4 +87,38 @@ pub fn predecessors(method: &Method) -> Vec<HashSet<BlockRef>> {
 
     dfs(method, &mut preds, &mut visited, method.entry);
     preds
+}
+
+pub fn optimize(mut program: Program, optimizations: &[Optimization]) -> Program {
+    let mut optimizations: HashSet<_> = optimizations.iter().cloned().collect();
+    if optimizations.remove(&Optimization::All) {
+        optimizations.extend([
+            Optimization::CopyPropagation,
+            Optimization::DeadCodeElimination,
+            Optimization::CommonSubexpressionElimination,
+        ]);
+    }
+
+    // Construct SSA form
+    for method in program.methods.values_mut() {
+        *method = construct_ssa(method);
+    }
+
+    // Copy propagation
+    if optimizations.contains(&Optimization::CopyPropagation) {
+        for method in program.methods.values_mut() {
+            copy_prop::propagate_copies(method);
+        }
+    }
+
+    // Destruct SSA form
+    program.methods = program
+        .methods
+        .iter()
+        .map(|(name, method)| (name.clone(), destruct_ssa(&program, method)))
+        .collect();
+    // for (name, method) in program.methods.iter() {
+    //     println!("{}\n{}", name, method.dump_graphviz());
+    // }
+    program
 }

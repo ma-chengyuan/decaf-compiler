@@ -17,6 +17,9 @@ impl Dominance {
         self.doms[block.0]
     }
 
+    /// Returns an iterator over the dominators of a block. Dominators are
+    /// iterated up the dominator tree. That is, the first element is the block
+    /// itself, and the last element is the entry block.
     pub fn dominators(&self, block: BlockRef) -> DominatorIterator {
         DominatorIterator {
             doms: &self.doms,
