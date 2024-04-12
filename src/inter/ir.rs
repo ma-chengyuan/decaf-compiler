@@ -12,7 +12,7 @@ use super::{constant::Const, types::Type};
 /// An opaque reference to an SSA instruction.
 /// Instructions represent primitive types.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct InstRef(usize);
+pub struct InstRef(pub usize);
 
 impl InstRef {
     pub const fn invalid() -> Self {
@@ -28,7 +28,7 @@ impl fmt::Display for InstRef {
 
 /// An opaque reference to a block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct BlockRef(usize);
+pub struct BlockRef(pub usize);
 
 impl fmt::Display for BlockRef {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -39,7 +39,7 @@ impl fmt::Display for BlockRef {
 /// An opaque reference to a stack slot.
 /// Stack slots are used to represent local variables and function parameters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct StackSlotRef(usize);
+pub struct StackSlotRef(pub usize);
 
 impl fmt::Display for StackSlotRef {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -72,6 +72,8 @@ pub enum Inst {
     /// The infamous phi node.
     Phi(HashMap<BlockRef, InstRef>),
 
+    Copy(InstRef),
+
     Add(InstRef, InstRef),
     Sub(InstRef, InstRef),
     Mul(InstRef, InstRef),
@@ -93,6 +95,9 @@ pub enum Inst {
     // Memory operations
     /// Load a constant value (primitive type only!)
     LoadConst(Const),
+
+    // Load function arguments.
+    LoadArg(usize),
 
     // Loads and stores are designed to not take arbitrary addresses, because
     // Decaf does not support pointer arithmetic. This is a design decision to
@@ -134,17 +139,91 @@ pub enum Inst {
     LoadStringLiteral(String),
 }
 
+impl Inst {
+    pub fn for_each_inst_ref(&mut self, mut thunk: impl FnMut(&mut InstRef)) {
+        match self {
+            Inst::Phi(map) => {
+                for inst in map.values_mut() {
+                    thunk(inst);
+                }
+            }
+            Inst::Add(lhs, rhs)
+            | Inst::Sub(lhs, rhs)
+            | Inst::Mul(lhs, rhs)
+            | Inst::Div(lhs, rhs)
+            | Inst::Mod(lhs, rhs)
+            | Inst::Eq(lhs, rhs)
+            | Inst::Neq(lhs, rhs)
+            | Inst::Less(lhs, rhs)
+            | Inst::LessEq(lhs, rhs)
+            | Inst::StoreArray {
+                index: lhs,
+                value: rhs,
+                ..
+            } => {
+                thunk(lhs);
+                thunk(rhs);
+            }
+            Inst::Copy(operand)
+            | Inst::Neg(operand)
+            | Inst::Not(operand)
+            | Inst::Store { value: operand, .. }
+            | Inst::LoadArray { index: operand, .. } => {
+                thunk(operand);
+            }
+            Inst::Call { args, .. } => {
+                for arg in args {
+                    thunk(arg);
+                }
+            }
+            Inst::LoadConst(_)
+            | Inst::Load(_)
+            | Inst::LoadArg(_)
+            | Inst::Initialize { .. }
+            | Inst::LoadStringLiteral(_)
+            | Inst::Illegal => {}
+        }
+    }
+
+    pub fn for_each_stack_slot_ref(&mut self, mut thunk: impl FnMut(&mut StackSlotRef)) {
+        match self {
+            Inst::Initialize { stack_slot, .. } => thunk(stack_slot),
+            Inst::StoreArray {
+                addr: Address::Local(slot),
+                ..
+            }
+            | Inst::LoadArray {
+                addr: Address::Local(slot),
+                ..
+            }
+            | Inst::Load(Address::Local(slot))
+            | Inst::Store {
+                addr: Address::Local(slot),
+                ..
+            } => {
+                thunk(slot);
+            }
+            _ => {}
+        }
+    }
+}
+
 impl fmt::Display for Inst {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Inst::Illegal => write!(f, "illegal"),
             Inst::Phi(map) => {
                 write!(f, "phi {{")?;
-                for (block, inst) in map {
-                    write!(f, " {} -> {},", block, inst)?;
+                for (i, (block, inst)) in map.iter().enumerate() {
+                    write!(f, " {} -> {}", block, inst)?;
+                    if i < map.len() - 1 {
+                        write!(f, ",")?;
+                    }
                 }
                 write!(f, " }}")
             }
+            Inst::Copy(inst) => write!(f, "{}", inst),
+            Inst::LoadArg(i) => write!(f, "load_arg {}", i),
             Inst::Add(lhs, rhs) => write!(f, "add {}, {}", lhs, rhs),
             Inst::Sub(lhs, rhs) => write!(f, "sub {}, {}", lhs, rhs),
             Inst::Mul(lhs, rhs) => write!(f, "mul {}, {}", lhs, rhs),
@@ -213,6 +292,28 @@ pub enum Terminator {
         true_: BlockRef,
         false_: BlockRef,
     },
+}
+
+impl Terminator {
+    pub fn for_each_inst_ref(&mut self, mut thunk: impl FnMut(&mut InstRef)) {
+        match self {
+            Terminator::Return(Some(inst)) => thunk(inst),
+            Terminator::Jump(_) => {}
+            Terminator::CondJump { cond, .. } => thunk(cond),
+            _ => {}
+        }
+    }
+
+    pub fn for_each_block_ref(&mut self, mut thunk: impl FnMut(&mut BlockRef)) {
+        match self {
+            Terminator::Jump(target) => thunk(target),
+            Terminator::CondJump { true_, false_, .. } => {
+                thunk(true_);
+                thunk(false_);
+            }
+            _ => {}
+        }
+    }
 }
 
 impl fmt::Display for Terminator {
@@ -305,6 +406,13 @@ impl Method {
         inst_ref
     }
 
+    pub fn next_inst_prepend(&mut self, block: BlockRef, inst: Inst) -> InstRef {
+        let inst_ref = InstRef(self.insts.len());
+        self.insts.push(inst);
+        self.block_mut(block).insts.insert(0, inst_ref);
+        inst_ref
+    }
+
     pub fn inst(&self, inst_ref: InstRef) -> &Inst {
         &self.insts[inst_ref.0]
     }
@@ -350,64 +458,171 @@ impl Method {
         panic!("instruction not found in any block");
     }
 
+    pub fn n_blocks(&self) -> usize {
+        self.blocks.len()
+    }
+
+    pub fn n_insts(&self) -> usize {
+        self.insts.len()
+    }
+
+    pub fn n_stack_slots(&self) -> usize {
+        self.stack_slots.len()
+    }
+
     pub fn iter_slack_slots(&self) -> SlackSlotIter {
-        SlackSlotIter {
-            method: self,
-            iter: self.stack_slots.iter().enumerate(),
-        }
+        SlackSlotIter(self.stack_slots.iter().enumerate())
     }
 
     pub fn iter_insts(&self) -> InstIter {
-        InstIter {
-            method: self,
-            iter: self.insts.iter().enumerate(),
-        }
+        InstIter(self.insts.iter().enumerate())
+    }
+
+    pub fn iter_insts_mut(&mut self) -> InstIterMut {
+        InstIterMut(self.insts.iter_mut().enumerate())
     }
 
     pub fn iter_blocks(&self) -> BlockIter {
-        BlockIter {
-            method: self,
-            iter: self.blocks.iter().enumerate(),
+        BlockIter(self.blocks.iter().enumerate())
+    }
+
+    /// Removes unreachable blocks and unreferenced instructions.
+    ///
+    /// Invalidates all references to blocks and instructions!
+    pub fn remove_unreachable(&mut self) {
+        use crate::opt::for_each_successor;
+
+        let mut visited = vec![false; self.n_blocks()];
+
+        fn dfs(method: &Method, visited: &mut Vec<bool>, block: BlockRef) {
+            if !visited[block.0] {
+                visited[block.0] = true;
+                for_each_successor(method, block, |succ| dfs(method, visited, succ));
+            }
+        }
+
+        dfs(self, &mut visited, self.entry);
+
+        let mut new_block_refs = vec![BlockRef(usize::MAX); self.n_blocks()];
+        let mut next_block_ref = 0;
+        let mut new_inst_refs = vec![InstRef::invalid(); self.n_insts()];
+        let mut next_inst_ref = 0;
+        for i in 0..self.n_blocks() {
+            if visited[i] {
+                new_block_refs[i] = BlockRef(next_block_ref);
+                next_block_ref += 1;
+                for inst in &self.blocks[i].insts {
+                    new_inst_refs[inst.0] = InstRef(next_inst_ref);
+                    next_inst_ref += 1;
+                }
+            }
+        }
+
+        self.entry = new_block_refs[self.entry.0];
+        for (i, mut block) in std::mem::take(&mut self.blocks).into_iter().enumerate() {
+            if !visited[i] {
+                continue;
+            }
+            let term = &mut block.term;
+            term.for_each_block_ref(|block_ref| *block_ref = new_block_refs[block_ref.0]);
+            term.for_each_inst_ref(|inst_ref| *inst_ref = new_inst_refs[inst_ref.0]);
+            for inst in &mut block.insts {
+                *inst = new_inst_refs[inst.0];
+            }
+            self.blocks.push(block);
+        }
+        let mut new_insts = vec![Inst::Illegal; next_inst_ref];
+        for (i, mut inst) in std::mem::take(&mut self.insts).into_iter().enumerate() {
+            if new_inst_refs[i] == InstRef::invalid() {
+                continue;
+            }
+            match &mut inst {
+                Inst::Phi(map) => {
+                    *map = std::mem::take(map)
+                        .into_iter()
+                        .map(|(block, inst)| (new_block_refs[block.0], new_inst_refs[inst.0]))
+                        .collect();
+                }
+                inst => inst.for_each_inst_ref(|ref_| *ref_ = new_inst_refs[ref_.0]),
+            }
+            new_insts[new_inst_refs[i].0] = inst;
+        }
+        self.insts = new_insts;
+        for (block, annotation) in std::mem::take(&mut self.block_annotations) {
+            if visited[block.0] {
+                self.block_annotations
+                    .insert(new_block_refs[block.0], annotation);
+            }
+        }
+        for (inst, annotation) in std::mem::take(&mut self.inst_annotations) {
+            if new_inst_refs[inst.0] != InstRef::invalid() {
+                self.inst_annotations
+                    .insert(new_inst_refs[inst.0], annotation);
+            }
+        }
+    }
+
+    pub fn remove_unused_stack_slots(&mut self) {
+        let mut used = vec![false; self.n_stack_slots()];
+        for (_, inst) in self.iter_insts_mut() {
+            inst.for_each_stack_slot_ref(|slot| used[slot.0] = true);
+        }
+        let mut new_stack_slots = vec![StackSlotRef(usize::MAX); self.n_stack_slots()];
+        let mut next_stack_slot_ref = 0;
+        for i in 0..self.n_stack_slots() {
+            if used[i] {
+                new_stack_slots[i] = StackSlotRef(next_stack_slot_ref);
+                next_stack_slot_ref += 1;
+            }
+        }
+        self.stack_slots = std::mem::take(&mut self.stack_slots)
+            .into_iter()
+            .enumerate()
+            .filter_map(|(i, slot)| if used[i] { Some(slot) } else { None })
+            .collect();
+        for (_, inst) in self.iter_insts_mut() {
+            inst.for_each_stack_slot_ref(|slot| *slot = new_stack_slots[slot.0]);
         }
     }
 }
 
-pub struct SlackSlotIter<'a> {
-    method: &'a Method,
-    iter: std::iter::Enumerate<std::slice::Iter<'a, StackSlot>>,
-}
+pub struct SlackSlotIter<'a>(std::iter::Enumerate<std::slice::Iter<'a, StackSlot>>);
 
 impl<'a> Iterator for SlackSlotIter<'a> {
     type Item = (StackSlotRef, &'a StackSlot);
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.iter.next().map(|(i, slot)| (StackSlotRef(i), slot))
+        self.0.next().map(|(i, slot)| (StackSlotRef(i), slot))
     }
 }
 
-pub struct InstIter<'a> {
-    method: &'a Method,
-    iter: std::iter::Enumerate<std::slice::Iter<'a, Inst>>,
-}
+pub struct InstIter<'a>(std::iter::Enumerate<std::slice::Iter<'a, Inst>>);
 
 impl<'a> Iterator for InstIter<'a> {
     type Item = (InstRef, &'a Inst);
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.iter.next().map(|(i, inst)| (InstRef(i), inst))
+        self.0.next().map(|(i, inst)| (InstRef(i), inst))
     }
 }
 
-pub struct BlockIter<'a> {
-    method: &'a Method,
-    iter: std::iter::Enumerate<std::slice::Iter<'a, Block>>,
+pub struct InstIterMut<'a>(std::iter::Enumerate<std::slice::IterMut<'a, Inst>>);
+
+impl<'a> Iterator for InstIterMut<'a> {
+    type Item = (InstRef, &'a mut Inst);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.0.next().map(|(i, inst)| (InstRef(i), inst))
+    }
 }
+
+pub struct BlockIter<'a>(std::iter::Enumerate<std::slice::Iter<'a, Block>>);
 
 impl<'a> Iterator for BlockIter<'a> {
     type Item = (BlockRef, &'a Block);
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.iter.next().map(|(i, block)| (BlockRef(i), block))
+        self.0.next().map(|(i, block)| (BlockRef(i), block))
     }
 }
 

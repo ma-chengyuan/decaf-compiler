@@ -1101,6 +1101,13 @@ impl<'a> MethodBuilder<'a> {
         self.method.annotate_block_mut(self.method.entry).str = Some("entry".to_string());
         // Don't introduce a new scope for the method body, will just use the parameter scope.
         self.build_block_no_new_scope(&self.method_decl.body.inner, self.method.entry);
+        self.method.remove_unreachable();
+
+        println!("Before:\n{}", self.method);
+        let mut ssa = crate::opt::into_ssa::into_ssa(&self.method);
+        crate::opt::copy_prop::propagate_copies(&mut ssa);
+        println!("SSA:\n{}", ssa);
+
         self.method
     }
 }

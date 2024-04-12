@@ -2,6 +2,7 @@ use std::{path::Path, rc::Rc};
 
 mod assembler;
 mod inter;
+mod opt;
 mod parse;
 mod scan;
 mod utils;

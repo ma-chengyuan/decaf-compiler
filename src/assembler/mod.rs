@@ -101,25 +101,21 @@ impl Assembler {
         }
         let mut inst_to_offset: HashMap<InstRef, i64> = HashMap::new();
 
-        // Declare as macro to work around borrow checker
-        // Can't use regular functions because it would borrow self.program.globals
-        macro_rules! address_to_ty {
-            ($addr:expr) => {
-                (match $addr {
-                    Address::Local(stack_slot) => &method.stack_slot(*stack_slot).ty,
-                    Address::Global(name) => &self.program.globals[&name.to_string()].ty,
-                })
-            };
-        }
-
         macro_rules! block_ref_to_label {
             ($block_ref:expr) => {
                 format!("{}_method_{}", $block_ref, method.name.inner)
             };
         }
 
-        for (inst_ref, inst) in method.iter_insts() {
-            let size = match inst {
+        fn address_to_ty<'a>(prog: &'a Program, method: &'a Method, addr: &Address) -> &'a Type {
+            match addr {
+                Address::Local(stack_slot) => &method.stack_slot(*stack_slot).ty,
+                Address::Global(name) => &prog.globals[&name.to_string()].ty,
+            }
+        }
+
+        fn infer_inst_size(program: &Program, method: &Method, inst: InstRef) -> usize {
+            match method.inst(inst) {
                 Inst::Add(_, _)
                 | Inst::Sub(_, _)
                 | Inst::Mul(_, _)
@@ -131,24 +127,29 @@ impl Assembler {
                 | Inst::Less(_, _)
                 | Inst::LessEq(_, _)
                 | Inst::Not(_) => BOOL_SIZE,
-                Inst::Load(addr) => address_to_ty!(addr).size(),
-                Inst::LoadArray { addr, .. } => match address_to_ty!(addr) {
+                Inst::Copy(inst) => infer_inst_size(program, method, *inst),
+                Inst::Load(addr) => address_to_ty(program, method, addr).size(),
+                Inst::LoadArray { addr, .. } => match address_to_ty(program, method, addr) {
                     Type::Array { base, .. } => base.size(),
                     _ => unreachable!(),
                 },
                 Inst::LoadConst(c) => c.size(),
                 Inst::LoadStringLiteral(_) => INT_SIZE,
-                Inst::Call { method, .. } => self
-                    .program
+                Inst::Call { method, .. } => program
                     .methods
                     .get(&method.to_string())
                     .map(|m| m.return_ty.size())
                     .unwrap_or(INT_SIZE),
                 // No IR is allowed to depend on the return value of these instructions
                 Inst::Store { .. } | Inst::StoreArray { .. } | Inst::Initialize { .. } => 0,
+                Inst::LoadArg(i) => method.params[*i].1.size(),
                 Inst::Phi(_) => unimplemented!("Phi nodes not supported in assembly"),
                 Inst::Illegal => unreachable!(),
-            };
+            }
+        }
+
+        for (inst_ref, _) in method.iter_insts() {
+            let size = infer_inst_size(&self.program, method, inst_ref);
             stack_space += size as i64;
             // todo: should this line go here or at the top of the for loop?
             inst_to_offset.insert(inst_ref, -stack_space);
@@ -179,7 +180,7 @@ impl Assembler {
                 ));
             }
             let mut stack_offset = 16; // return address is 8 bytes. saved rbp is also 8 bytes.
-            for (arg_slot_ref, arg_slot) in method.iter_slack_slots().skip(6) {
+            for (arg_slot_ref, arg_slot) in method.iter_slack_slots().take(n_args).skip(6) {
                 self.emit_code(format!("movq {}(%rbp), %rax", stack_offset));
                 stack_offset += arg_slot.ty.size() as i64;
                 self.emit_code(format!(
@@ -214,6 +215,17 @@ impl Assembler {
                     self.emit_code(format!("# No annotation available for inst {}", inst));
                 }
                 match inst {
+                    Inst::Copy(src) => {
+                        self.emit_code(format!("movq {}, %rax", get_inst_ref_location(*src)));
+                        self.emit_code(format!("movq %rax, {}", get_inst_ref_location(inst_ref)));
+                    }
+                    Inst::LoadArg(i) => {
+                        self.emit_code(format!(
+                            "movq {}(%rbp), %rax",
+                            stack_slot_to_offset[&StackSlotRef(*i)]
+                        ));
+                        self.emit_code(format!("movq %rax, {}", get_inst_ref_location(inst_ref)));
+                    }
                     Inst::Add(lhs, rhs) | Inst::Sub(lhs, rhs) | Inst::Mul(lhs, rhs) => {
                         let inst_name = match inst {
                             Inst::Add(_, _) => "add",
@@ -253,35 +265,35 @@ impl Assembler {
                     Inst::Not(var) => {
                         self.emit_code(format!("cmpq $0, {}", get_inst_ref_location(*var)));
                         self.emit_code("sete %al");
-                        self.emit_code(format!("movzbq %al, %rax"));
+                        self.emit_code("movzbq %al, %rax");
                         self.emit_code(format!("movq %rax, {}", get_inst_ref_location(inst_ref)));
                     }
                     Inst::Eq(lhs, rhs) => {
                         self.emit_code(format!("movq {}, %rax", get_inst_ref_location(*rhs)));
                         self.emit_code(format!("cmpq %rax, {}", get_inst_ref_location(*lhs)));
                         self.emit_code("sete %al");
-                        self.emit_code(format!("movzbq %al, %rax"));
+                        self.emit_code("movzbq %al, %rax");
                         self.emit_code(format!("movq %rax, {}", get_inst_ref_location(inst_ref)));
                     }
                     Inst::Neq(lhs, rhs) => {
                         self.emit_code(format!("movq {}, %rax", get_inst_ref_location(*rhs)));
                         self.emit_code(format!("cmpq %rax, {}", get_inst_ref_location(*lhs)));
                         self.emit_code("setne %al");
-                        self.emit_code(format!("movzbq %al, %rax"));
+                        self.emit_code("movzbq %al, %rax");
                         self.emit_code(format!("movq %rax, {}", get_inst_ref_location(inst_ref)));
                     }
                     Inst::Less(lhs, rhs) => {
                         self.emit_code(format!("movq {}, %rax", get_inst_ref_location(*rhs)));
                         self.emit_code(format!("cmpq %rax, {}", get_inst_ref_location(*lhs)));
                         self.emit_code("setl %al");
-                        self.emit_code(format!("movzbq %al, %rax"));
+                        self.emit_code("movzbq %al, %rax");
                         self.emit_code(format!("movq %rax, {}", get_inst_ref_location(inst_ref)));
                     }
                     Inst::LessEq(lhs, rhs) => {
                         self.emit_code(format!("movq {}, %rax", get_inst_ref_location(*rhs)));
                         self.emit_code(format!("cmpq %rax, {}", get_inst_ref_location(*lhs)));
                         self.emit_code("setle %al");
-                        self.emit_code(format!("movzbq %al, %rax"));
+                        self.emit_code("movzbq %al, %rax");
                         self.emit_code(format!("movq %rax, {}", get_inst_ref_location(inst_ref)));
                     }
                     Inst::LoadConst(value) => {
@@ -318,7 +330,7 @@ impl Assembler {
                     Inst::LoadArray { addr, index } => {
                         // Do bound check first
                         self.emit_code(format!("movq {}, %rax", get_inst_ref_location(*index)));
-                        let (length, elem_size) = match address_to_ty!(addr) {
+                        let (length, elem_size) = match address_to_ty(&self.program, method, addr) {
                             Type::Array { length, base } => (*length, base.size()),
                             _ => unreachable!(),
                         };
@@ -341,7 +353,7 @@ impl Assembler {
                     }
                     Inst::StoreArray { addr, index, value } => {
                         self.emit_code(format!("movq {}, %rax", get_inst_ref_location(*index)));
-                        let (length, elem_size) = match address_to_ty!(addr) {
+                        let (length, elem_size) = match address_to_ty(&self.program, method, addr) {
                             Type::Array { length, base } => (*length, base.size()),
                             _ => unreachable!(),
                         };
