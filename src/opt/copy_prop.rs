@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use crate::inter::ir::{BlockRef, Inst, InstRef, Method};
+use crate::inter::ir::{Inst, InstRef, Method};
 
 enum Values {
     Zero,

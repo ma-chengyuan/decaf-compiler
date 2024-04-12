@@ -5,7 +5,7 @@ use crate::inter::{
     ir::{
         Address, Annotation, GlobalVar, Inst, InstRef, Method, Program, StackSlotRef, Terminator,
     },
-    types::{Type, BOOL_SIZE, INT_SIZE},
+    types::Type,
 };
 
 pub struct Assembler {

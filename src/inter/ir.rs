@@ -8,10 +8,7 @@ use crate::{
     utils::formatting::{Table, TableRow},
 };
 
-use super::{
-    constant::Const,
-    types::{PrimitiveType, Type},
-};
+use super::{constant::Const, types::Type};
 
 /// An opaque reference to an SSA instruction.
 /// Instructions represent primitive types.
@@ -605,6 +602,10 @@ impl Method {
         let mut used = vec![false; self.n_stack_slots()];
         for (_, inst) in self.iter_insts_mut() {
             inst.for_each_stack_slot_ref(|slot| used[slot.0] = true);
+        }
+        for (slot, _) in self.iter_slack_slots().take(self.params.len()) {
+            // Don't remove parameters.
+            used[slot.0] = true;
         }
         let mut new_stack_slots = vec![StackSlotRef(usize::MAX); self.n_stack_slots()];
         let mut next_stack_slot_ref = 0;
