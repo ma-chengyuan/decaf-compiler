@@ -13,7 +13,7 @@ use super::{
 
 /// A constant value in the intermediate representation.
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Const {
     Int(i64),
     Bool(bool),

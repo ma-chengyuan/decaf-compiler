@@ -13,6 +13,8 @@ pub struct Dominance {
 }
 
 impl Dominance {
+    /// Returns the immediate dominator of a block, or the block itself if it's
+    /// the entry block.
     pub fn immediate_dominator(&self, block: BlockRef) -> BlockRef {
         self.doms[block.0]
     }
@@ -27,17 +29,25 @@ impl Dominance {
         }
     }
 
+    /// Returns the dominance frontier of a block.
     pub fn dominance_frontier(&self, block: BlockRef) -> &HashSet<BlockRef> {
         &self.frontiers[block.0]
     }
 
-    pub fn preorder(&self, root: BlockRef) -> Vec<BlockRef> {
+    /// Returns the dominator tree of the method.
+    pub fn dominator_tree(&self) -> Vec<Vec<BlockRef>> {
         let mut children = vec![vec![]; self.doms.len()];
         for (i, &dom) in self.doms.iter().enumerate() {
             if dom.0 != i {
                 children[dom.0].push(BlockRef(i));
             }
         }
+        children
+    }
+
+    /// Returns the preorder traversal of the dominator tree starting from a block.
+    pub fn preorder(&self, root: BlockRef) -> Vec<BlockRef> {
+        let children = self.dominator_tree();
         let mut ret = vec![];
         fn dfs(children: &[Vec<BlockRef>], node: BlockRef, ret: &mut Vec<BlockRef>) {
             ret.push(node);

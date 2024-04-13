@@ -9,6 +9,7 @@ use crate::{
 use self::ssa::destruct_ssa;
 
 pub mod copy_prop;
+pub mod cse;
 pub mod dead_code;
 pub mod dom;
 pub mod ssa;
@@ -105,13 +106,6 @@ pub fn optimize(mut program: Program, optimizations: &[Optimization]) -> Program
         *method = construct_ssa(method);
     }
 
-    // Copy propagation
-    if optimizations.contains(&Optimization::CopyPropagation) {
-        for method in program.methods.values_mut() {
-            copy_prop::propagate_copies(method);
-        }
-    }
-
     // Dead code elimination
     if optimizations.contains(&Optimization::DeadCodeElimination) {
         for method in program.methods.values_mut() {
@@ -119,14 +113,28 @@ pub fn optimize(mut program: Program, optimizations: &[Optimization]) -> Program
         }
     }
 
+    // Copy propagation
+    if optimizations.contains(&Optimization::CopyPropagation) {
+        for method in program.methods.values_mut() {
+            copy_prop::propagate_copies(method);
+        }
+    }
+
+    // Common subexpression elimination
+    if optimizations.contains(&Optimization::CommonSubexpressionElimination) {
+        for method in program.methods.values_mut() {
+            cse::eliminate_common_subexpressions(method);
+        }
+    }
+
+    // for (name, method) in program.methods.iter() {
+    //     println!("{}:\n{}", name, method.dump_graphviz());
+    // }
     // Destruct SSA form
     program.methods = program
         .methods
         .iter()
         .map(|(name, method)| (name.clone(), destruct_ssa(&program, method)))
         .collect();
-    // for (name, method) in program.methods.iter() {
-    //     println!("{}\n{}", name, method.dump_graphviz());
-    // }
     program
 }

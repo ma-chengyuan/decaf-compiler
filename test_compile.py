@@ -65,7 +65,7 @@ def main():
                     total_cases += 1
                     test_case = TestCase(str(input_file_dir / input_file))
                     proc = run(input_file_dir / input_file)
-                    _, stderr = proc.communicate()
+                    compiler_stdout, stderr = proc.communicate()
                     if proc.returncode != 0:
                         test_case.unexpected_error(stderr.decode("utf-8"))
                         continue
@@ -98,7 +98,7 @@ def main():
                         stdout = stdout.decode("utf-8")
                         if stdout.strip() == expected_output.strip():
                             passed_cases += 1
-                            test_case.expected_pass("")
+                            test_case.expected_pass(compiler_stdout.decode("utf-8"))
                         else:
                             differ = difflib.Differ()
                             result = "\n".join(

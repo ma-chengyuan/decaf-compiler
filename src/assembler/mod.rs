@@ -168,7 +168,7 @@ impl Assembler {
 
             for (inst_ref, inst) in block.insts.iter().map(|iref| (*iref, method.inst(*iref))) {
                 if let Some(annotation) = method.get_inst_annotation(&inst_ref) {
-                    if let Some(span) = &annotation.span {
+                    for span in annotation.spans() {
                         let start_loc = span.start().to_owned();
                         self.emit_annotated_code(
                             format!(".loc 0 {} {}", start_loc.line, start_loc.column),
@@ -412,15 +412,14 @@ impl Assembler {
                         self.emit_code("call exit");
                     } else {
                         if let Some(ret) = ret {
-                            if let Some(span) =
-                                method.get_inst_annotation(ret).and_then(|a| a.span.clone())
-                            {
-                                // note: this points to the return value, not the return statement :(
-                                self.emit_code(format!(
-                                    ".loc 0 {} {}",
-                                    span.start().line,
-                                    span.start().column
-                                ));
+                            if let Some(annotation) = method.get_inst_annotation(ret) {
+                                for span in annotation.spans() {
+                                    self.emit_code(format!(
+                                        ".loc 0 {} {}",
+                                        span.start().line,
+                                        span.start().column
+                                    ));
+                                }
                             }
                             self.emit_code(format!("movq {}, %rax", get_inst_ref_location(*ret)));
                         }
@@ -477,7 +476,7 @@ impl Assembler {
         self.emit_code(format!(
             "movq ${}, %rsi",
             inst_annotation
-                .and_then(|a| a.span.clone())
+                .and_then(|a| a.spans().first().cloned())
                 .map(|s| s.start().line)
                 .unwrap_or(0) // TODO: better error handling
         ));

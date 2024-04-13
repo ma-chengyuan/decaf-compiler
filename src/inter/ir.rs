@@ -256,25 +256,48 @@ impl fmt::Display for Inst {
     }
 }
 
-/// Some metadata to help debugging?
+/// Metadata associated with an instruction or a block.
+/// This helps debugging, and allows codegen to emit .loc directives.
 #[derive(Debug, Clone, Default)]
 pub struct Annotation {
     pub str: Option<String>,
-    pub span: Option<Span>, // Maybe an instruction is associated with a span?
-    pub ident: Option<Ident>, // Maybe an instruction is associated with an identifier?
+    pub span: Option<Span>, // An instruction may be associated with a span in the original code?
+    pub ident: Option<Ident>, // An instruction may be associated with an identifier.
+    // Annotation may be nested as a single instruction assumes multiple spans.
+    // This will happen with optimizations, such as constant folding, copy
+    // propagation, or CSE.
+    pub children: Vec<Annotation>,
+}
+
+impl Annotation {
+    /// Returns all spans associated with this annotation. Does not deduplicate.
+    pub fn spans(&self) -> Vec<Span> {
+        let mut spans = vec![];
+        if let Some(span) = &self.span {
+            spans.push(span.clone());
+        }
+        if let Some(ident) = &self.ident {
+            spans.push(ident.span.clone());
+        }
+        spans.extend(self.children.iter().flat_map(|a| a.spans()));
+        spans
+    }
 }
 
 impl fmt::Display for Annotation {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut strings = vec![];
         if let Some(str) = &self.str {
-            write!(f, "{} ", str)?;
+            strings.push(str.clone());
         }
         if let Some(span) = &self.span {
-            write!(f, "{} ", span.source_str())?;
+            strings.push(span.source_str());
         }
         if let Some(ident) = &self.ident {
-            write!(f, "{} ", ident.inner)?;
+            strings.push(ident.inner.to_string());
         }
+        strings.extend(self.children.iter().map(|a| a.to_string()));
+        write!(f, "{}", strings.join(", "))?;
         Ok(())
     }
 }

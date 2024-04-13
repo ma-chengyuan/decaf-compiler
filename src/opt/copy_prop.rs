@@ -27,16 +27,25 @@ pub fn propagate_copies(method: &mut Method) {
         // Therefore, iterating in preorder of the dominator tree is sufficient.
         for block in dom.preorder(method.entry) {
             let mut removed = HashSet::new();
+            let mut propagate =
+                |method: &mut Method, orig: &mut [InstRef], inst: InstRef, src: InstRef| {
+                    orig[inst.0] = orig[src.0];
+                    if let Some(annotation) = method.get_inst_annotation(&inst) {
+                        let annotation = annotation.clone();
+                        method.annotate_inst_mut(inst).children.push(annotation);
+                    }
+                    removed.insert(inst);
+                };
+
             for inst in method.block(block).insts.clone() {
                 match method.inst_mut(inst) {
                     Inst::Copy(src) => {
-                        orig[inst.0] = orig[src.0];
-                        removed.insert(inst);
+                        let src = *src;
+                        propagate(method, &mut orig, inst, src);
                     }
                     Inst::Phi(map) => {
                         if let Values::One(src) = map.values().fold(Values::Zero, update_values) {
-                            orig[inst.0] = orig[src.0];
-                            removed.insert(inst);
+                            propagate(method, &mut orig, inst, src);
                         }
                     }
                     inst => inst.for_each_inst_ref(|inst_ref| *inst_ref = orig[inst_ref.0]),
