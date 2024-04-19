@@ -1,0 +1,108 @@
+int partition(int p, int r) {
+stack:
+    stack:0 int p 
+    stack:1 int r 
+block_0: ; entry
+    %0  = load stack:1            ; r     
+    %1  = load stack:0            ; p     
+    %2  = %1                      ; p     
+    %3  = load_array global:A[%2] ; A[p]  
+    %4  = %1                      ; p     
+    %5  = load_const 1            ; 1     
+    %6  = sub %4, %5              ; p - 1 
+    %7  = %0                      ; r     
+    %8  = load_const 1            ; 1     
+    %9  = add %7, %8              ; r + 1 
+    %10 = load_const 0            ; 0     
+    jump block_2
+block_1: ; for loop body at line 16
+    %11 = %16          ; j     
+    %12 = load_const 1 ; 1     
+    %13 = sub %11, %12 ; j - 1 
+    %14 = load_const 0 ; 0     
+    jump block_5
+block_2: ; for loop condition at line 16
+    %15 = phi { block_0 -> %10, block_14 -> %69 } ; z                   
+    %16 = phi { block_14 -> %29, block_0 -> %9 }  ; j                   
+    %17 = phi { block_0 -> %6, block_14 -> %50 }  ; i                   
+    %18 = %15                                     ; z                   
+    %19 = load global:length                      ; length              
+    %20 = load global:length                      ; length              
+    %21 = mul %19, %20                            ; length * length     
+    %22 = less %18, %21                           ; z < length * length 
+    cond_jump %22 block_1 block_3
+block_3:
+    %23 = load_const -1 ; -1 
+    return %23
+block_4: ; for loop body at line 19
+    %24 = %29                      ; j         
+    %25 = load_array global:A[%24] ; A[j]      
+    %26 = %3                       ; x         
+    %27 = less_eq %25, %26         ; A[j] <= x 
+    cond_jump %27 block_7 block_8
+block_5: ; for loop condition at line 19
+    %28 = phi { block_8 -> %41, block_1 -> %14 } ; a          
+    %29 = phi { block_1 -> %13, block_8 -> %38 } ; j          
+    %30 = %28                                    ; a          
+    %31 = load global:length                     ; length     
+    %32 = less %30, %31                          ; a < length 
+    cond_jump %32 block_4 block_6
+block_6:
+    %33 = %17          ; i     
+    %34 = load_const 1 ; 1     
+    %35 = add %33, %34 ; i + 1 
+    jump block_10
+block_7: ; if-then block at line 20
+    jump block_6
+block_8:
+    %36 = %29          ; j     
+    %37 = load_const 1 ; 1     
+    %38 = sub %36, %37 ; j - 1 
+    %39 = %28          
+    %40 = load_const 1 ; 1     
+    %41 = add %39, %40 
+    jump block_5
+block_9: ; for loop body at line 25
+    %42 = %46                      ; a         
+    %43 = load_array global:A[%42] ; A[a]      
+    %44 = %3                       ; x         
+    %45 = less_eq %44, %43         ; A[a] >= x 
+    cond_jump %45 block_12 block_13
+block_10: ; for loop condition at line 25
+    %46 = phi { block_6 -> %35, block_13 -> %57 } ; a          
+    %47 = %46                                     ; a          
+    %48 = load global:length                      ; length     
+    %49 = less %47, %48                           ; a < length 
+    cond_jump %49 block_9 block_11
+block_11:
+    %50 = phi { block_12 -> %54, block_10 -> %17 } ; i     
+    %51 = %50                                      ; i     
+    %52 = %29                                      ; j     
+    %53 = less %51, %52                            ; i < j 
+    cond_jump %53 block_14 block_15
+block_12: ; if-then block at line 26
+    %54 = %46 ; a 
+    jump block_11
+block_13:
+    %55 = %46          
+    %56 = load_const 1 ; 1 
+    %57 = add %55, %56 
+    jump block_10
+block_14: ; if-then block at line 31
+    %58 = %50                           ; i    
+    %59 = load_array global:A[%58]      ; A[i] 
+    %60 = %50                           ; i    
+    %61 = %29                           ; j    
+    %62 = load_array global:A[%61]      ; A[j] 
+    %63 = store_array global:A[%60] %62 
+    %64 = %29                           ; j    
+    %65 = %59                           ; t    
+    %66 = store_array global:A[%64] %65 
+    %67 = %15                           
+    %68 = load_const 1                  ; 1    
+    %69 = add %67, %68                  
+    jump block_2
+block_15: ; if-else block at line 31
+    %70 = %29 ; j 
+    return %70
+}
