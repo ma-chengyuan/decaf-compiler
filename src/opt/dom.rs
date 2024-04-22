@@ -58,6 +58,20 @@ impl Dominance {
         dfs(&children, root, &mut ret);
         ret
     }
+
+    /// Returns the postorder traversal of the dominator tree starting from a block.
+    pub fn postorder(&self, root: BlockRef) -> Vec<BlockRef> {
+        let children = self.dominator_tree();
+        let mut ret = vec![];
+        fn dfs(children: &[Vec<BlockRef>], node: BlockRef, ret: &mut Vec<BlockRef>) {
+            for &child in &children[node.0] {
+                dfs(children, child, ret);
+            }
+            ret.push(node);
+        }
+        dfs(&children, root, &mut ret);
+        ret
+    }
 }
 
 pub struct DominatorIterator<'a> {

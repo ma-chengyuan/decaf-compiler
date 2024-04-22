@@ -16,3 +16,8 @@ colored = "2.0.0"
 lazy_static = "1.4.0"
 # For macro magic
 paste = "1.0.0"
+# For immutable data structures
+# im = "15.1"
+# priority-queue = "2.0"
+opener = "0.7"
+tempfile = "3.10"

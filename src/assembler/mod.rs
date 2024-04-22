@@ -8,6 +8,8 @@ use crate::inter::{
     types::Type,
 };
 
+pub mod regalloc;
+
 pub struct Assembler {
     program: Program,
     // corresponds to .data

@@ -12,7 +12,7 @@ use super::{constant::Const, types::Type};
 
 /// An opaque reference to an SSA instruction.
 /// Instructions represent primitive types.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct InstRef(pub usize);
 
 impl InstRef {
@@ -21,30 +21,48 @@ impl InstRef {
     }
 }
 
-impl fmt::Display for InstRef {
+impl fmt::Debug for InstRef {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "%{}", self.0)
     }
 }
 
+impl fmt::Display for InstRef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
 /// An opaque reference to a block.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct BlockRef(pub usize);
 
-impl fmt::Display for BlockRef {
+impl fmt::Debug for BlockRef {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "block_{}", self.0)
     }
 }
 
+impl fmt::Display for BlockRef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
 /// An opaque reference to a stack slot.
 /// Stack slots are used to represent local variables and function parameters.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct StackSlotRef(pub usize);
+
+impl fmt::Debug for StackSlotRef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "stack_{}", self.0)
+    }
+}
 
 impl fmt::Display for StackSlotRef {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "stack:{}", self.0)
+        write!(f, "{:?}", self)
     }
 }
 
@@ -138,7 +156,7 @@ pub enum Inst {
 }
 
 impl Inst {
-    pub fn for_each_inst_ref(&mut self, mut thunk: impl FnMut(&mut InstRef)) {
+    pub fn for_each_inst_ref<V>(&mut self, mut thunk: impl FnMut(&mut InstRef) -> V) {
         match self {
             Inst::Phi(map) => {
                 for inst in map.values_mut() {
@@ -182,9 +200,11 @@ impl Inst {
         }
     }
 
-    pub fn for_each_stack_slot_ref(&mut self, mut thunk: impl FnMut(&mut StackSlotRef)) {
+    pub fn for_each_stack_slot_ref<V>(&mut self, mut thunk: impl FnMut(&mut StackSlotRef) -> V) {
         match self {
-            Inst::Initialize { stack_slot, .. } => thunk(stack_slot),
+            Inst::Initialize { stack_slot, .. } => {
+                thunk(stack_slot);
+            }
             Inst::StoreArray {
                 addr: Address::Local(slot),
                 ..
@@ -314,18 +334,24 @@ pub enum Terminator {
 }
 
 impl Terminator {
-    pub fn for_each_inst_ref(&mut self, mut thunk: impl FnMut(&mut InstRef)) {
+    pub fn for_each_inst_ref<V>(&mut self, mut thunk: impl FnMut(&mut InstRef) -> V) {
         match self {
-            Terminator::Return(Some(inst)) => thunk(inst),
+            Terminator::Return(Some(inst)) => {
+                thunk(inst);
+            }
             Terminator::Jump(_) => {}
-            Terminator::CondJump { cond, .. } => thunk(cond),
+            Terminator::CondJump { cond, .. } => {
+                thunk(cond);
+            }
             _ => {}
         }
     }
 
-    pub fn for_each_block_ref(&mut self, mut thunk: impl FnMut(&mut BlockRef)) {
+    pub fn for_each_block_ref<V>(&mut self, mut thunk: impl FnMut(&mut BlockRef) -> V) {
         match self {
-            Terminator::Jump(target) => thunk(target),
+            Terminator::Jump(target) => {
+                thunk(target);
+            }
             Terminator::CondJump { true_, false_, .. } => {
                 thunk(true_);
                 thunk(false_);
@@ -519,6 +545,7 @@ impl Method {
         let predecessors = predecessors(self);
         let mut next: Vec<Option<BlockRef>> = vec![None; self.n_blocks()];
         let mut prev: Vec<Option<BlockRef>> = vec![None; self.n_blocks()];
+        // TODO: DONT MERGE BLOCKS THAT START WITH PHI NODES!!!
         for block_ref in self
             .iter_block_refs()
             .filter(|b| predecessors[b.0].len() == 1)
