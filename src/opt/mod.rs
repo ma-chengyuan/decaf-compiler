@@ -129,7 +129,7 @@ pub fn optimize(mut program: Program, optimizations: &[Optimization]) -> Program
 
     for (name, method) in program.methods.iter() {
         println!("{}:", name);
-        crate::assembler::regalloc::Spiller::new(&program, method, 4).spill();
+        crate::assembler::regalloc::Spiller::new(&program, method, 3).spill();
     }
     // Destruct SSA form
     program.methods = program

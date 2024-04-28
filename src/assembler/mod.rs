@@ -395,7 +395,9 @@ impl Assembler {
                         self.emit_code(format!("leaq {}(%rip), %rax", str_name));
                         self.emit_code(format!("movq %rax, {}", get_inst_ref_location(inst_ref)));
                     }
-                    Inst::Phi(_) => unimplemented!("Phi nodes not supported in assembly"),
+                    Inst::Phi(_) | Inst::PhiMem { .. } => {
+                        unimplemented!("Phi nodes not supported in assembly")
+                    }
                     Inst::Illegal => unreachable!(),
                 }
             }

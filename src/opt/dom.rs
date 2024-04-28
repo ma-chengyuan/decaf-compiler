@@ -29,6 +29,18 @@ impl Dominance {
         }
     }
 
+    pub fn dominates(&self, block1: BlockRef, block2: BlockRef) -> bool {
+        let mut runner = block2;
+        while runner != block1 {
+            if runner == self.doms[runner.0] {
+                // Reached the entry block.
+                return false;
+            }
+            runner = self.doms[runner.0];
+        }
+        true
+    }
+
     /// Returns the dominance frontier of a block.
     pub fn dominance_frontier(&self, block: BlockRef) -> &HashSet<BlockRef> {
         &self.frontiers[block.0]

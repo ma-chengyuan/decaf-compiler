@@ -90,6 +90,12 @@ pub enum Inst {
     Illegal,
     /// The infamous phi node.
     Phi(HashMap<BlockRef, InstRef>),
+    /// Memory Phi node. Used for phi nodes that load from memory, only used
+    /// AFTER register allocation! **CODE BREAKS IF INTRODUCED EARLIER!**
+    PhiMem {
+        src: HashMap<BlockRef, StackSlotRef>,
+        dst: StackSlotRef,
+    },
 
     Copy(InstRef),
 
@@ -195,6 +201,7 @@ impl Inst {
             Inst::LoadConst(_)
             | Inst::Load(_)
             | Inst::Initialize { .. }
+            | Inst::PhiMem { .. }
             | Inst::LoadStringLiteral(_)
             | Inst::Illegal => {}
         }
@@ -204,6 +211,12 @@ impl Inst {
         match self {
             Inst::Initialize { stack_slot, .. } => {
                 thunk(stack_slot);
+            }
+            Inst::PhiMem { src, dst } => {
+                thunk(dst);
+                for slot in src.values_mut() {
+                    thunk(slot);
+                }
             }
             Inst::StoreArray {
                 addr: Address::Local(slot),
@@ -238,6 +251,16 @@ impl fmt::Display for Inst {
                     }
                 }
                 write!(f, " }}")
+            }
+            Inst::PhiMem { src, dst } => {
+                write!(f, "phi_mem {{")?;
+                for (i, (block, slot)) in src.iter().enumerate() {
+                    write!(f, " {} -> {}", block, slot)?;
+                    if i < src.len() - 1 {
+                        write!(f, ",")?;
+                    }
+                }
+                write!(f, " }} -> {}", dst)
             }
             Inst::Copy(inst) => write!(f, "{}", inst),
             Inst::Add(lhs, rhs) => write!(f, "add {}, {}", lhs, rhs),
@@ -455,6 +478,24 @@ impl Method {
         let inst_ref = InstRef(self.insts.len());
         self.insts.push(inst);
         self.block_mut(block).insts.insert(0, inst_ref);
+        inst_ref
+    }
+
+    pub fn next_inst_before(&mut self, block: BlockRef, inst: Inst, before: InstRef) -> InstRef {
+        let inst_ref = InstRef(self.insts.len());
+        self.insts.push(inst);
+        let block = self.block_mut(block);
+        let pos = block.insts.iter().position(|&inst| inst == before).unwrap();
+        block.insts.insert(pos, inst_ref);
+        inst_ref
+    }
+
+    pub fn next_inst_after(&mut self, block: BlockRef, inst: Inst, after: InstRef) -> InstRef {
+        let inst_ref = InstRef(self.insts.len());
+        self.insts.push(inst);
+        let block = self.block_mut(block);
+        let pos = block.insts.iter().position(|&inst| inst == after).unwrap();
+        block.insts.insert(pos + 1, inst_ref);
         inst_ref
     }
 
@@ -903,9 +944,10 @@ impl Program {
                         .unwrap_or(Type::int()), // External calls return int
                 ),
                 // No IR is allowed to depend on the return value of these instructions
-                Inst::Store { .. } | Inst::StoreArray { .. } | Inst::Initialize { .. } => {
-                    Some(Type::Void)
-                }
+                Inst::Store { .. }
+                | Inst::StoreArray { .. }
+                | Inst::Initialize { .. }
+                | Inst::PhiMem { .. } => Some(Type::Void),
                 Inst::Phi(map) => map
                     .values()
                     .cloned()
