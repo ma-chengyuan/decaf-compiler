@@ -55,12 +55,21 @@ pub struct LoweredMethod {
 // pub const REGS: [&str; 4] = ["%r12", "%r13", "%r14", "%r15"];
 pub const REGS: [&str; 5] = ["%r12", "%r13", "%r14", "%r15", "%rbx"];
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct PendingBoundsCheck {
+    reg: &'static str,
+    length: usize,
+    line: usize,
+}
+
 pub struct Assembler {
     program: Program,
     // corresponds to .data
     data: Vec<String>,
     // corresponds to .text
     code: Vec<String>,
+
+    pending_bounds_check: BTreeSet<PendingBoundsCheck>,
 }
 
 impl Assembler {
@@ -69,6 +78,7 @@ impl Assembler {
             program,
             data: Vec::new(),
             code: Vec::new(),
+            pending_bounds_check: BTreeSet::new(),
         }
     }
 
@@ -112,6 +122,13 @@ impl Assembler {
             self.assemble_lowered_method(&lowered);
         }
 
+        self.emit_label("bounds_check.fail");
+        self.emit_code("leaq index_out_of_bounds_msg(%rip), %rdi");
+        self.emit_code("call printf");
+        // Call exit(-1)
+        self.emit_code("movq $-1, %rdi");
+        self.emit_code("call exit");
+
         self.emit_data_label("index_out_of_bounds_msg");
         self.emit_data_code(".string \"Error: index out of bounds on line %d. Array length is %d; queried index is %d.\\n\"");
 
@@ -136,7 +153,8 @@ impl Assembler {
     }
 
     fn assemble_lowered_method(&mut self, l: &LoweredMethod) {
-        self.emit_label(&l.method.name.inner);
+        let method_name = &l.method.name.inner;
+        self.emit_label(method_name);
         let arg_registers = ["%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"];
 
         // Compute stack spaces
@@ -149,8 +167,7 @@ impl Assembler {
         }
         let mut block_ref_to_label: Vec<String> = vec![Default::default(); l.method.n_blocks()];
         for block_ref in l.method.iter_block_refs() {
-            block_ref_to_label[block_ref.0] =
-                format!("{}_method_{}", block_ref, l.method.name.inner);
+            block_ref_to_label[block_ref.0] = format!("{}.{}", method_name, block_ref);
         }
         let tainted_callee_saved_regs = l
             .reg
@@ -352,6 +369,7 @@ impl Assembler {
                                 _ => unreachable!(),
                             };
                         self.emit_bounds_check(
+                            method_name,
                             reg![index],
                             length,
                             l.method.get_inst_annotation(index),
@@ -384,6 +402,7 @@ impl Assembler {
                                 _ => unreachable!(),
                             };
                         self.emit_bounds_check(
+                            method_name,
                             reg![index],
                             length,
                             l.method.get_inst_annotation(index),
@@ -585,39 +604,56 @@ impl Assembler {
                 }
             }
         }
+        self.flush_bounds_check(method_name);
+    }
+
+    fn get_bound_check_fail_label(
+        &self,
+        method_name: &str,
+        reg: &'static str,
+        length: usize,
+        line: usize,
+    ) -> String {
+        format!(
+            "{}.bound_check_fail.{}.{}.{}",
+            method_name,
+            &reg[1..], // Remove the % sign
+            length,
+            line
+        )
     }
 
     /// Checks if %rax is in [0, length) and panics if not
     fn emit_bounds_check(
         &mut self,
-        reg: &str,
+        method_name: &str,
+        reg: &'static str,
         length: usize,
         inst_annotation: Option<&Annotation>,
     ) {
-        let fail_branch = format!("bound_check_fail_{}", self.code.len());
-        let pass_branch = format!("bound_check_pass_{}", self.code.len());
-        self.emit_code(format!("cmpq $0, {}", reg));
-        self.emit_code(format!("jl {}", fail_branch));
-        self.emit_code(format!("cmpq ${}, {}", length, reg));
-        self.emit_code(format!("jl {}", pass_branch));
-        self.emit_label(&fail_branch);
-        // print an error message.
-        // first argument is the format string, second is the line number, third is arr.len, fourth is the index
-        self.emit_code(format!("movq {}, %rcx", reg));
-        self.emit_code("leaq index_out_of_bounds_msg(%rip), %rdi");
-        self.emit_code(format!(
-            "movq ${}, %rsi",
-            inst_annotation
-                .and_then(|a| a.spans().first().cloned())
-                .map(|s| s.start().line)
-                .unwrap_or(0) // TODO: better error handling
-        ));
-        self.emit_code(format!("movq ${}, %rdx", length));
-        self.emit_code("call printf");
-        // Call exit(-1)
-        self.emit_code("movq $-1, %rdi");
-        self.emit_code("call exit");
-        self.emit_label(&pass_branch);
+        let line = inst_annotation
+            .and_then(|a| a.spans().first().cloned())
+            .map(|s| s.start().line)
+            .unwrap_or(0); // TODO: better error handling
+        let fail_branch = self.get_bound_check_fail_label(method_name, reg, length, line);
+        self.pending_bounds_check
+            .insert(PendingBoundsCheck { reg, length, line });
+        self.emit_code(format!("cmpq ${}, {}", length - 1, reg));
+        self.emit_code(format!("ja {}", fail_branch)); // Unsigned comparison
+    }
+
+    fn flush_bounds_check(&mut self, method_name: &str) {
+        for PendingBoundsCheck { reg, length, line } in
+            std::mem::take(&mut self.pending_bounds_check)
+        {
+            // first argument is the format string, second is the line number, third is arr.len, fourth is the index
+            let fail_branch = self.get_bound_check_fail_label(method_name, reg, length, line);
+            self.emit_label(&fail_branch);
+            self.emit_code(format!("movq {}, %rcx", reg));
+            self.emit_code(format!("movq ${}, %rsi", line));
+            self.emit_code(format!("movq ${}, %rdx", length));
+            self.emit_code("jmp bounds_check.fail");
+        }
     }
 
     fn emit_local_initialize(&mut self, c: &Const, mut stack_offset: i64) {
