@@ -177,7 +177,7 @@ impl Spiller<'_> {
         // Compute spill heuristic backwards.
         // h is the union (min-merge) of the spill heuristic of all successors.
         for_each_successor(&self.method, block_ref, |succ| {
-            let first_pt = self.first_prog_pt(succ);
+            let first_pt = self.method.first_prog_pt(succ);
             if let Some(h_successor) = self.spill_heuristic.get(&first_pt) {
                 h.merge_min(h_successor);
             }
@@ -213,10 +213,10 @@ impl Spiller<'_> {
             match self.method.inst_mut(inst_ref) {
                 Inst::Phi(_) | Inst::PhiMem { .. } => break, // Phi instructions are handled above.
                 inst => {
-                    // Update value use in the instruction.
-                    inst.for_each_inst_ref(|inst_ref| h.insert(*inst_ref, 0));
                     // inst_ref has just been defined, so it's not live above.
                     h.remove(&inst_ref);
+                    // Update value use in the instruction.
+                    inst.for_each_inst_ref(|inst_ref| h.insert(*inst_ref, 0));
                     if !self.update_spill_heuristic(ProgPt::BeforeInst(inst_ref), &h) {
                         return false;
                     }

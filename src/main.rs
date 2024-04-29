@@ -137,7 +137,15 @@ fn main_assembler(args: utils::cli::Args, mut writer: Box<dyn std::io::Write>) {
     };
     program = opt::optimize(program, &args.opt);
     let mut assembler = Assembler::new(program);
-    let res = assembler.assemble(args.input.clone().unwrap().as_os_str().to_str().unwrap());
+    let file_name = args
+        .input
+        .clone()
+        .unwrap()
+        .as_os_str()
+        .to_string_lossy()
+        .to_string();
+    let res = assembler.assemble_lowered(&file_name);
+    // let res = assembler.assemble(&file_name);
     writeln!(writer, "{}", res).unwrap();
 }
 

@@ -1,18 +1,17 @@
 #![allow(dead_code)]
 use std::{
-    cmp::Ordering,
-    collections::{HashMap, HashSet, VecDeque},
+    collections::{HashMap, HashSet},
     hash::Hash,
 };
 
 use crate::{
     inter::{
-        ir::{Address, BlockRef, Inst, InstRef, Method, Program, StackSlotRef, Terminator},
+        ir::{Address, BlockRef, Inst, InstRef, Method, ProgPt, Program, StackSlotRef, Terminator},
         types::Type,
     },
     opt::{
         dom::{compute_dominance, Dominance},
-        for_each_successor, predecessors, reverse_postorder, ssa,
+        predecessors, reverse_postorder, split_critical_edges,
     },
     utils::{
         formatting::{Table, TableRow},
@@ -24,75 +23,7 @@ mod belady;
 
 use belady::BeladyMap;
 
-/// Create a new method where all critical edges are split.
-///
-/// Critical edges are edges of the form A->B where A has >=2 successors and B
-/// has >=2 predecessors. The problem with critical edges is that their
-/// existence makes it hard to add code "to the edge," which is often needed
-/// when destructing phi instructions. Without phi edges,
-///
-/// - A->B, A has multiple successors => A must be B's only predecessor =>
-///   adding code "on edge" is prepending to B;
-/// - A->B, B has multiple predecessors => B must be A's only successor =>
-///   adding code "on edge" is appending to A.
-///
-/// Nice and simple. Can't do that with critical edges though.
-pub fn split_critical_edges(method: &Method) -> Method {
-    let mut new_method = method.clone();
-    let predecessors = predecessors(method);
-    for block in method.iter_block_refs() {
-        if predecessors[block.0].len() <= 1 {
-            continue;
-        }
-        for pred in predecessors[block.0].iter() {
-            let mut successors = HashSet::new();
-            for_each_successor(method, *pred, |succ| {
-                successors.insert(succ);
-            });
-            if successors.len() == 1 {
-                // If we only have one successor, we can just jump to it.
-                // This is just in case the original terminator is a conditional
-                // jump with the same destination on both branches. This slightly
-                // messes up with register allocation down the line.
-                let succ = *successors.iter().next().unwrap();
-                new_method.block_mut(*pred).term = Terminator::Jump(succ);
-            }
-            let critical = successors.len() >= 2;
-            if critical {
-                let edge_block = new_method.next_block();
-                new_method.block_mut(*pred).term.for_each_block_ref(|succ| {
-                    if *succ == block {
-                        *succ = edge_block;
-                    }
-                });
-                new_method.block_mut(edge_block).term = Terminator::Jump(block);
-                for inst_ref in new_method.block(block).insts.clone() {
-                    let Inst::Phi(map) = new_method.inst_mut(inst_ref) else {
-                        break;
-                    };
-                    map.insert(edge_block, map[&pred]);
-                    map.remove(pred);
-                }
-            };
-        }
-    }
-    new_method
-}
-
-/// A Program Point.
-///
-/// Note: a block's first program point comes after all phi instructions. This
-/// is because phi instructions have special semantics (parallel execution) and
-/// technically happens "on the edge" rather than in the block.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum ProgPt {
-    /// Before an instruction.
-    BeforeInst(InstRef),
-    /// Before the terminator of a block.
-    BeforeTerm(BlockRef),
-    /// After the terminator of a block.
-    AfterTerm(BlockRef),
-}
+use super::LoweredMethod;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum ReloadSpill {
@@ -147,9 +78,10 @@ pub struct Spiller<'a> {
     /// in some register. The latter is a pure memory-to-memory operation. We
     /// require that operands of a phi-spill are also spilled.
     phi_spills: HashSet<InstRef>,
-
     /// Mapping from spilled variables to their spill slots.
     spill_slots: HashMap<InstRef, StackSlotRef>,
+    /// Some instructions do not need all of their variables in registers.
+    mem_args: HashMap<InstRef, HashSet<InstRef>>,
 }
 
 impl<'a> Spiller<'a> {
@@ -178,6 +110,7 @@ impl<'a> Spiller<'a> {
             spill_slots: HashMap::new(),
             spill_sites: HashMap::new(),
             phi_spills: HashSet::new(),
+            mem_args: HashMap::new(),
             inst_to_block_pos,
             max_reg,
             method,
@@ -198,7 +131,7 @@ impl<'a> Spiller<'a> {
         }
     }
 
-    pub fn spill(mut self) -> Method {
+    pub fn spill(mut self) -> LoweredMethod {
         self.eval_spill_heuristic();
         // Go over blocks in reverse postorder.
         // For normal blocks that aren't loop headers, this order ensures that
@@ -213,46 +146,27 @@ impl<'a> Spiller<'a> {
         // .clone() to appease the borrow checker.
         let rev_postorder = self.rev_postorder.clone();
         for block in &rev_postorder {
-            self.insert_intrablock_spills(*block);
+            self.add_intrablock_spills(*block);
         }
+        self.add_phi_pre_spills();
         for block in &rev_postorder {
             self.fix_interblock_coupling(*block);
         }
         // crate::utils::show_graphviz(&self.dump_graphviz());
-        let new_method = self.reconstruct_ssa();
-        // crate::utils::show_graphviz(&new_method.dump_graphviz());
-        new_method
-    }
+        let method = self.reconstruct_ssa();
+        // crate::utils::show_graphviz(&method.dump_graphviz());
+        LoweredMethod {
+            method,
+            max_reg: self.max_reg,
+            dom: self.dom,
+            dom_tree: self.dom_tree,
+            predecessors: self.predecessors,
+            spill_slots: self.spill_slots,
+            mem_args: self.mem_args,
 
-    /// Returns the first program point of a block.
-    ///
-    /// The first program point of a block is here defined as the first program
-    /// point AFTER ALL PHI instructions. Phi instructions don't count since
-    /// they execute in parallel and should really happen "on the edge."
-    fn first_prog_pt(&self, block_ref: BlockRef) -> ProgPt {
-        for inst_ref in self.method.block(block_ref).insts.iter() {
-            match self.method.inst(*inst_ref) {
-                Inst::Phi(_) | Inst::PhiMem { .. } => continue,
-                _ => return ProgPt::BeforeInst(*inst_ref),
-            }
+            live_at: Default::default(),
+            reg: Default::default(),
         }
-        ProgPt::BeforeTerm(block_ref)
-    }
-
-    /// Get the set of phi instructions at the beginning of a block, excluding
-    /// phi memory instructions.
-    fn get_phis(&self, block_ref: BlockRef) -> HashSet<InstRef> {
-        let mut phis = HashSet::new();
-        for inst_ref in self.method.block(block_ref).insts.iter() {
-            match self.method.inst(*inst_ref) {
-                Inst::Phi(_) => {
-                    phis.insert(*inst_ref);
-                }
-                Inst::PhiMem { .. } => continue,
-                _ => break,
-            }
-        }
-        phis
     }
 
     /// Returns the set of blocks that are in the loop containing block_ref.
@@ -349,7 +263,7 @@ impl<'a> Spiller<'a> {
         loop_usage: &HashSet<InstRef>,
         availability: Option<bool>,
     ) -> Option<bool> {
-        let h = &self.spill_heuristic[&self.first_prog_pt(block_ref)];
+        let h = &self.spill_heuristic[&self.method.first_prog_pt(block_ref)];
         if !h.is_live(&var) {
             // If a variable is supposedly "live", but actually not, it must be a phi.
             // A dead phi is not worth taking.
@@ -405,13 +319,13 @@ impl<'a> Spiller<'a> {
             return (self.reg_out[pred.0].clone(), self.spill_out[pred.0].clone());
         }
 
-        let first_pt = self.first_prog_pt(block_ref);
+        let first_pt = self.method.first_prog_pt(block_ref);
         let loop_body = self.get_loop(block_ref);
         // The set of variables we very much want to take into registers.
         let mut starter: Vec<InstRef> = vec![];
         // Uh..., not so sure, but good to have.
         let mut delayed: Vec<InstRef> = vec![];
-        let phis = self.get_phis(block_ref);
+        let phis = self.method.phis(block_ref);
 
         // If a loop, gets used variables in the loop and the maximum register
         // pressure.
@@ -576,31 +490,51 @@ impl<'a> Spiller<'a> {
 
     /// Adds a phi-spill to the list of phi-spills.
     fn add_phi_spill(&mut self, phi_var: InstRef) {
-        if self.phi_spills.insert(phi_var) {
+        self.phi_spills.insert(phi_var);
+        // if self.phi_spills.insert(phi_var) {
+        //     let Inst::Phi(map) = self.method.inst(phi_var) else {
+        //         unreachable!();
+        //     };
+        //     for (pred, var) in map.clone() {
+        //         // Note: this can unnecessarily introduce spills when a node has
+        //         // already been spilled. They will be removed in
+        //         // remove_dead_spills.
+        //         self.add_spill(&ProgPt::BeforeTerm(pred), var);
+        //     }
+        // }
+    }
+
+    fn add_phi_pre_spills(&mut self) {
+        for phi_var in self.phi_spills.clone() {
             let Inst::Phi(map) = self.method.inst(phi_var) else {
                 unreachable!();
             };
             for (pred, var) in map.clone() {
-                self.add_spill(&ProgPt::BeforeTerm(pred), var);
+                if self.reg_out[pred.0].contains(&var) && !self.spill_out[pred.0].contains(&var) {
+                    self.add_spill(&ProgPt::BeforeTerm(pred), var);
+                    self.spill_out[pred.0].insert(var);
+                } // Otherwise, the variable is already spilled.
             }
         }
     }
 
     fn fix_interblock_coupling(&mut self, block_ref: BlockRef) {
-        let first_pt = self.first_prog_pt(block_ref);
-        let phis = self.get_phis(block_ref);
+        let first_pt = self.method.first_prog_pt(block_ref);
+        let phis = self.method.phis(block_ref);
         let reg_in = self.reg_in[block_ref.0].clone();
         let spill_in = self.spill_in[block_ref.0].clone();
         let h = self.spill_heuristic[&first_pt].clone();
         for pred in self.predecessors[block_ref.0].clone() {
-            if self.dom.dominates(block_ref, pred) {
-                continue;
-            }
             let reg_out = self.reg_out[pred.0].clone();
             let spill_out = self.spill_out[pred.0].clone();
+            // let h = self.spill_heuristic[&ProgPt::BeforeTerm(pred)].clone();
             for var in reg_out.iter() {
+                // No need to special case when var may be a phi input. then there are two cases:
+                // - var is live-end at pred but not live-begin at block_ref: no need to spill.
+                // - var has more users down the line: should spill.
                 if !reg_in.contains(var) && h.is_live(var) && !spill_out.contains(var) {
                     self.add_spill(&ProgPt::BeforeTerm(pred), *var);
+                    self.spill_out[pred.0].insert(*var);
                 }
             }
             for var in reg_in.iter() {
@@ -608,13 +542,19 @@ impl<'a> Spiller<'a> {
                     Inst::Phi(map) if phis.contains(var) => map[&pred],
                     _ => *var,
                 };
-                if reg_out.contains(&var) {
-                    if !spill_out.contains(&var) && spill_in.contains(&var) {
-                        self.add_spill(&ProgPt::BeforeTerm(pred), var);
-                    }
-                } else {
+                if reg_out.contains(&var) && !spill_out.contains(&var) && spill_in.contains(&var) {
+                    self.add_spill(&ProgPt::BeforeTerm(pred), var);
+                    self.spill_out[pred.0].insert(var);
+                }
+            }
+            for var in reg_in.iter() {
+                let var = match self.method.inst(*var) {
+                    Inst::Phi(map) if phis.contains(var) => map[&pred],
+                    _ => *var,
+                };
+                if !reg_out.contains(&var) {
                     // Insert reload on the edge.
-                    if self.predecessors[pred.0].len() > 1 {
+                    if self.predecessors[block_ref.0].len() > 1 {
                         self.add_reload(&ProgPt::BeforeTerm(pred), var);
                     } else {
                         self.add_reload(&first_pt, var);
@@ -622,11 +562,21 @@ impl<'a> Spiller<'a> {
                 }
             }
         }
+        // for phi in phis {
+        //     let Inst::Phi(map) = self.method.inst(phi) else {
+        //         unreachable!();
+        //     };
+        //     for var in map.values() {
+        //         if !reg_in.contains(var) {
+        //             self.mem_args.entry(phi).or_default().insert(*var);
+        //         }
+        //     }
+        // }
     }
 
     /// Insert spills and reloads to ensure that the register pressure at a
     /// block is at most max_reg. This is done locally for each block.
-    fn insert_intrablock_spills(&mut self, block_ref: BlockRef) {
+    fn add_intrablock_spills(&mut self, block_ref: BlockRef) {
         let (mut live, mut spilled) = self.init_reg_in(block_ref);
         self.reg_in[block_ref.0] = live.clone();
         self.spill_in[block_ref.0] = spilled.clone();
@@ -683,9 +633,9 @@ impl<'a> Spiller<'a> {
             let reloading = args.difference(&live).cloned().collect::<Vec<_>>();
             let h = self.spill_heuristic[&prog_pt].clone();
 
-            let non_big_call = args.len() + (result_value.is_some() as usize) <= self.max_reg;
+            let not_big_call = args.len() + (result_value.is_some() as usize) <= self.max_reg;
 
-            if non_big_call {
+            if not_big_call {
                 for var in reloading.iter() {
                     live.insert(*var);
                     spilled.insert(*var);
@@ -706,7 +656,7 @@ impl<'a> Spiller<'a> {
             // The heuristic map based on which we make the spill decision is
             // the one for the program point AFTER the instruction.
             let mut h_post = self.spill_heuristic[&post_pt].clone();
-            if non_big_call {
+            if not_big_call {
                 // But modify it to prevent spilling of the arguments, since the
                 // spill is technically still inserted before the instruction. Don't
                 // want an argument to be spilled just to protect the result.
@@ -719,8 +669,15 @@ impl<'a> Spiller<'a> {
             if let Some(var) = result_value {
                 live.insert(var);
             }
-            for var in reloading {
-                self.add_reload(&prog_pt, var);
+            if not_big_call {
+                // It's fine not to reload the arguments for big calls. They
+                // will be pushed to the stack anyway.
+                for var in reloading {
+                    self.add_reload(&prog_pt, var);
+                }
+            } else {
+                self.mem_args
+                    .insert(insts[i], reloading.into_iter().collect());
             }
         }
         self.reg_out[block_ref.0] = live;
@@ -930,6 +887,14 @@ impl<'a> Spiller<'a> {
                     match inst_mut {
                         Inst::Phi(map) => {
                             // This is so ugly. I fought the borrow checker so hard...
+                            if self.phi_spills.contains(&inst_ref) {
+                                continue; // Skip memory phis. They will be dealt with later.
+                            }
+                            if let Some(mem_args) = self.mem_args.get(&inst_ref) {
+                                if mem_args.contains(&var) {
+                                    continue; // No need to fix usage of memory arguments.
+                                }
+                            }
                             let mut new_map = map.clone();
                             for (block, src) in new_map.iter_mut() {
                                 if *src == var {
@@ -949,13 +914,26 @@ impl<'a> Spiller<'a> {
                             };
                             *map = new_map;
                         }
-                        _ => resolve_uses!(
-                            new_method.inst_mut(inst_ref),
-                            ProgPt::BeforeInst(inst_ref)
-                        ),
+                        _ => {
+                            if let Some(mem_args) = self.mem_args.get(&inst_ref) {
+                                if mem_args.contains(&var) {
+                                    continue; // No need to fix usage of memory arguments.
+                                }
+                            }
+                            resolve_uses!(
+                                new_method.inst_mut(inst_ref),
+                                ProgPt::BeforeInst(inst_ref)
+                            );
+                        }
                     }
                 }
-                resolve_uses!(new_method.block_mut(block).term, ProgPt::BeforeTerm(block))
+                resolve_uses!(new_method.block_mut(block).term, ProgPt::BeforeTerm(block));
+            }
+        }
+
+        for (var, real_var) in &real_var {
+            if let Some(spill_slot) = self.spill_slots.get(real_var) {
+                self.spill_slots.insert(*var, *spill_slot);
             }
         }
 
@@ -969,14 +947,18 @@ impl<'a> Spiller<'a> {
             let mem_map = map
                 .into_iter()
                 .map(|(block, var)| {
-                    let var = real_var.get(&var).unwrap_or(&var);
-                    let spill_slot = self.spill_slots[&var];
-                    (block, spill_slot)
+                    (
+                        block,
+                        self.spill_slots
+                            .get(&var)
+                            .cloned()
+                            .unwrap_or_else(|| panic!("no spill slot for {}", var)),
+                    )
                 })
                 .collect::<HashMap<_, _>>();
             *inst_mut = Inst::PhiMem {
                 src: mem_map,
-                dst: self.spill_slots[&real_var.get(inst_ref).unwrap_or(inst_ref)],
+                dst: self.spill_slots[&inst_ref],
             }
         }
 
@@ -1010,11 +992,11 @@ impl<'a> Spiller<'a> {
             if let Some(annotation) = self.method.get_block_annotation(&block_ref) {
                 block_label.push_str(format!(" ; {}", annotation).as_str());
             }
-            block_label.push('\n');
-            // block_label.push_str(&format!(
-            //     "\n; reg in: {:?}\n; spill in: {:?}\n",
-            //     self.reg_in[block_ref.0], self.spill_in[block_ref.0]
-            // ));
+            // block_label.push('\n');
+            block_label.push_str(&format!(
+                "\n; reg in: {:?}\n; spill in: {:?}\n",
+                self.reg_in[block_ref.0], self.spill_in[block_ref.0]
+            ));
             let mut insts = Table::new();
             let add_spill_loads = |spiller: &Spiller<'a>, insts: &mut Table, prog_pt: ProgPt| {
                 // if let Some(h) = spiller.spill_heuristic.get(&prog_pt) {
@@ -1048,10 +1030,10 @@ impl<'a> Spiller<'a> {
             insts.add_row(TableRow::new().add(" ").add("").add(&block.term));
             add_spill_loads(self, &mut insts, ProgPt::AfterTerm(block_ref));
             block_label.push_str(format!("{}", insts).as_str());
-            // block_label.push_str(&format!(
-            //     "; reg out: {:?}\n; spill out: {:?}\n",
-            //     self.reg_out[block_ref.0], self.spill_out[block_ref.0]
-            // ));
+            block_label.push_str(&format!(
+                "; reg out: {:?}\n; spill out: {:?}\n",
+                self.reg_out[block_ref.0], self.spill_out[block_ref.0]
+            ));
             // Escape newlines in the block label and replace to \l to left-align.
             let block_label = format!("{:?}", block_label).replace("\\n", "\\l ");
             output.push_str(format!("  {} [label={}];\n", block_ref, block_label).as_str());

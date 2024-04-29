@@ -84,6 +84,21 @@ impl fmt::Display for Address {
     }
 }
 
+/// A Program Point.
+///
+/// Note: a block's first program point comes after all phi instructions. This
+/// is because phi instructions have special semantics (parallel execution) and
+/// technically happens "on the edge" rather than in the block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ProgPt {
+    /// Before an instruction.
+    BeforeInst(InstRef),
+    /// Before the terminator of a block.
+    BeforeTerm(BlockRef),
+    /// After the terminator of a block.
+    AfterTerm(BlockRef),
+}
+
 #[derive(Debug, Clone)]
 pub enum Inst {
     /// For debugging purposes, probably corresponds to nop in x86.
@@ -577,6 +592,37 @@ impl Method {
     /// immutably.
     pub fn iter_block_refs(&self) -> impl Iterator<Item = BlockRef> {
         (0..self.n_blocks()).map(BlockRef)
+    }
+
+    /// Returns the first program point of a block.
+    ///
+    /// The first program point of a block is here defined as the first program
+    /// point AFTER ALL PHI instructions. Phi instructions don't count since
+    /// they execute in parallel and should really happen "on the edge."
+    pub fn first_prog_pt(&self, block_ref: BlockRef) -> ProgPt {
+        for inst_ref in self.block(block_ref).insts.iter() {
+            match self.inst(*inst_ref) {
+                Inst::Phi(_) | Inst::PhiMem { .. } => continue,
+                _ => return ProgPt::BeforeInst(*inst_ref),
+            }
+        }
+        ProgPt::BeforeTerm(block_ref)
+    }
+
+    /// Get the set of phi instructions at the beginning of a block, excluding
+    /// phi memory instructions.
+    pub fn phis(&self, block_ref: BlockRef) -> HashSet<InstRef> {
+        let mut phis = HashSet::new();
+        for inst_ref in self.block(block_ref).insts.iter() {
+            match self.inst(*inst_ref) {
+                Inst::Phi(_) => {
+                    phis.insert(*inst_ref);
+                }
+                Inst::PhiMem { .. } => continue,
+                _ => break,
+            }
+        }
+        phis
     }
 
     /// Merge blocks that have a single predecessor and a single successor.

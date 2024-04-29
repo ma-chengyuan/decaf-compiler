@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use crate::{
-    inter::ir::{BlockRef, Method, Program, Terminator},
+    inter::ir::{BlockRef, Inst, Method, Program, Terminator},
     opt::ssa::construct_ssa,
     utils::cli::Optimization,
 };
@@ -91,6 +91,61 @@ pub fn predecessors(method: &Method) -> Vec<HashSet<BlockRef>> {
     preds
 }
 
+/// Create a new method where all critical edges are split.
+///
+/// Critical edges are edges of the form A->B where A has >=2 successors and B
+/// has >=2 predecessors. The problem with critical edges is that their
+/// existence makes it hard to add code "to the edge," which is often needed
+/// when destructing phi instructions. Without phi edges,
+///
+/// - A->B, A has multiple successors => A must be B's only predecessor =>
+///   adding code "on edge" is prepending to B;
+/// - A->B, B has multiple predecessors => B must be A's only successor =>
+///   adding code "on edge" is appending to A.
+///
+/// Nice and simple. Can't do that with critical edges though.
+pub fn split_critical_edges(method: &Method) -> Method {
+    let mut new_method = method.clone();
+    let predecessors = predecessors(method);
+    for block in method.iter_block_refs() {
+        if predecessors[block.0].len() <= 1 {
+            continue;
+        }
+        for pred in predecessors[block.0].iter() {
+            let mut successors = HashSet::new();
+            for_each_successor(method, *pred, |succ| {
+                successors.insert(succ);
+            });
+            if successors.len() == 1 {
+                // If we only have one successor, we can just jump to it.
+                // This is just in case the original terminator is a conditional
+                // jump with the same destination on both branches. This slightly
+                // messes up with register allocation down the line.
+                let succ = *successors.iter().next().unwrap();
+                new_method.block_mut(*pred).term = Terminator::Jump(succ);
+            }
+            let critical = successors.len() >= 2;
+            if critical {
+                let edge_block = new_method.next_block();
+                new_method.block_mut(*pred).term.for_each_block_ref(|succ| {
+                    if *succ == block {
+                        *succ = edge_block;
+                    }
+                });
+                new_method.block_mut(edge_block).term = Terminator::Jump(block);
+                for inst_ref in new_method.block(block).insts.clone() {
+                    let Inst::Phi(map) = new_method.inst_mut(inst_ref) else {
+                        break;
+                    };
+                    map.insert(edge_block, map[&pred]);
+                    map.remove(pred);
+                }
+            };
+        }
+    }
+    new_method
+}
+
 pub fn optimize(mut program: Program, optimizations: &[Optimization]) -> Program {
     let mut optimizations: HashSet<_> = optimizations.iter().cloned().collect();
     if optimizations.remove(&Optimization::All) {
@@ -127,10 +182,18 @@ pub fn optimize(mut program: Program, optimizations: &[Optimization]) -> Program
         }
     }
 
-    for (name, method) in program.methods.iter() {
-        println!("{}:", name);
-        crate::assembler::regalloc::Spiller::new(&program, method, 3).spill();
-    }
+    // let mut ls = vec![];
+    // for (name, method) in program.methods.iter() {
+    //     // println!("{}:", name);
+    //     let max_reg = 3;
+    //     let mut lowered = crate::assembler::spill::Spiller::new(&program, method, max_reg).spill();
+    //     crate::assembler::regalloc::RegAllocator::new(&program, &mut lowered, max_reg).allocate();
+    //     ls.push(lowered);
+    // }
+    // let mut assembler = crate::assembler::Assembler::new(program.clone());
+    // let _output = assembler.assemble_lowered("test.S", ls);
+    // println!("{}", output);
+
     // Destruct SSA form
     program.methods = program
         .methods
