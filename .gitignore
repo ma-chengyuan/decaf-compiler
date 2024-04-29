@@ -19,3 +19,4 @@ Cargo.lock
 /*.dcf
 /*.S
 __pycache__/
+test_program

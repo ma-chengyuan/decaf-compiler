@@ -18,6 +18,7 @@ pub enum Const {
     Int(i64),
     Bool(bool),
     Array(Vec<Const>),
+    Repeat(Box<Const>, usize),
 }
 
 lazy_static! {
@@ -41,6 +42,7 @@ impl fmt::Display for Const {
                 }
                 write!(f, "]")
             }
+            Const::Repeat(c, n) => write!(f, "[{} * {}]", c, n),
         }
     }
 }
@@ -79,7 +81,7 @@ impl Const {
             },
             Type::Array { base, length } => {
                 let base_default = Self::default_for(base);
-                Self::Array(vec![base_default; *length])
+                Self::Repeat(Box::new(base_default), *length)
             }
             Type::Invalid => Self::Int(0), // This is not a valid type, but we need to return something.
             Type::Void => unreachable!(),
@@ -91,6 +93,7 @@ impl Const {
             Const::Int(_) => INT_SIZE,
             Const::Bool(_) => BOOL_SIZE,
             Const::Array(arr) => arr.iter().map(Self::size).sum(),
+            Const::Repeat(c, n) => c.size() * n,
         }
     }
 }

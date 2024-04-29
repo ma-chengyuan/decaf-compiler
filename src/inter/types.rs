@@ -117,6 +117,10 @@ impl Type {
                 base: Box::new(Self::from_const(&elems[0])),
                 length: elems.len(),
             },
+            Const::Repeat(elem, n) => Self::Array {
+                base: Box::new(Self::from_const(elem)),
+                length: *n,
+            },
         }
     }
 }

@@ -408,21 +408,9 @@ impl Assembler {
                             }
                         }
                     }
-                    Inst::Initialize { stack_slot, value } => match value {
-                        Const::Int(_) | Const::Bool(_) => {
-                            self.load_int_or_bool_const(
-                                value,
-                                &format!("{}(%rbp)", stack_slot_to_offset[stack_slot]),
-                            );
-                        }
-                        Const::Array(arr_vals) => {
-                            let mut stack_slot = stack_slot_to_offset[stack_slot];
-                            for val in arr_vals.iter() {
-                                self.load_int_or_bool_const(val, &format!("{}(%rbp)", stack_slot));
-                                stack_slot += val.size() as i64;
-                            }
-                        }
-                    },
+                    Inst::Initialize { stack_slot, value } => {
+                        self.emit_local_initialize(value, stack_slot_to_offset[&stack_slot])
+                    }
                     Inst::LoadStringLiteral(s) => {
                         skip_non_side_effective!();
                         let str_name = format!("str_{}", self.data.len());
@@ -631,6 +619,43 @@ impl Assembler {
         self.emit_label(&pass_branch);
     }
 
+    fn emit_local_initialize(&mut self, c: &Const, mut stack_offset: i64) {
+        match c {
+            Const::Int(_) | Const::Bool(_) => {
+                self.load_int_or_bool_const(c, &format!("{}(%rbp)", stack_offset));
+            }
+            Const::Array(arr_vals) => {
+                for val in arr_vals.iter() {
+                    self.load_int_or_bool_const(val, &format!("{}(%rbp)", stack_offset));
+                    stack_offset += val.size() as i64;
+                }
+            }
+            Const::Repeat(val, n) => match &**val {
+                Const::Int(0) | Const::Bool(false) => {
+                    // Use memset to zero out the memory
+                    for reg in ["%rdi", "%rsi", "%rdx"].iter() {
+                        self.emit_code(format!("pushq {}", reg));
+                    }
+                    self.emit_code("subq $8, %rsp");
+                    self.emit_code(format!("leaq {}(%rbp), %rdi", stack_offset));
+                    self.emit_code("movq $0, %rsi");
+                    self.emit_code(format!("movq ${}, %rdx", n * val.size()));
+                    self.emit_code("call memset");
+                    self.emit_code("addq $8, %rsp");
+                    for reg in ["%rdi", "%rsi", "%rdx"].iter().rev() {
+                        self.emit_code(format!("popq {}", reg));
+                    }
+                }
+                _ => {
+                    for _ in 0..*n {
+                        self.load_int_or_bool_const(val, &format!("{}(%rbp)", stack_offset));
+                        stack_offset += val.size() as i64;
+                    }
+                }
+            },
+        }
+    }
+
     fn emit_const_data(&mut self, c: &Const) {
         match c {
             Const::Int(val) => self.emit_data_code(format!(".quad {}", val)),
@@ -640,6 +665,17 @@ impl Assembler {
                     self.emit_const_data(v);
                 }
             }
+            Const::Repeat(val, n) => match &**val {
+                Const::Int(0) | Const::Bool(false) => {
+                    // Fast path for zero-initialized arrays
+                    self.emit_data_code(format!(".zero {}", c.size()));
+                }
+                _ => {
+                    for _ in 0..*n {
+                        self.emit_const_data(val);
+                    }
+                }
+            },
         }
     }
 
