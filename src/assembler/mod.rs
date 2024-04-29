@@ -1,5 +1,7 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 
+use lazy_static::lazy_static;
+
 use crate::{
     assembler::par_copy::{serialize_copies, SerializedStep},
     inter::{
@@ -53,7 +55,17 @@ pub struct LoweredMethod {
 /// Use callee-saved registers for now
 // pub const REGS: [&str; 3] = ["%r12", "%r13", "%r14"];
 // pub const REGS: [&str; 4] = ["%r12", "%r13", "%r14", "%r15"];
-pub const REGS: [&str; 5] = ["%r12", "%r13", "%r14", "%r15", "%rbx"];
+const CALLEE_SAVE_REGS: [&str; 5] = ["%r12", "%r13", "%r14", "%r15", "%rbx"];
+const CALLER_SAVE_REGS: [&str; 7] = ["%r8", "%r9", "%r10", "%r11", "%rcx", "%rdi", "%rsi"];
+const ARG_REGS: [&str; 6] = ["%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"];
+lazy_static! {
+    static ref REGS: Vec<&'static str> = {
+        let mut regs = Vec::new();
+        regs.extend_from_slice(&CALLEE_SAVE_REGS);
+        regs.extend_from_slice(&CALLER_SAVE_REGS);
+        regs
+    };
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct PendingBoundsCheck {
@@ -155,7 +167,6 @@ impl Assembler {
     fn assemble_lowered_method(&mut self, l: &LoweredMethod) {
         let method_name = &l.method.name.inner;
         self.emit_label(method_name);
-        let arg_registers = ["%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"];
 
         // Compute stack spaces
         let mut stack_space = 0i64;
@@ -173,7 +184,7 @@ impl Assembler {
             .reg
             .values()
             .map(|&r| REGS[r])
-            .filter(|&r| ["%rbx", "%r12", "%r13", "%r14", "%r15"].contains(&r))
+            .filter(|&r| CALLEE_SAVE_REGS.contains(&r))
             .collect::<BTreeSet<_>>();
         // Align stack space to 16 bytes
         stack_space = (stack_space + 15) & !15;
@@ -204,7 +215,7 @@ impl Assembler {
             {
                 self.emit_code(format!(
                     "movq {}, {}(%rbp)",
-                    arg_registers[arg_idx], stack_slot_to_offset[&arg_slot_iter.0]
+                    ARG_REGS[arg_idx], stack_slot_to_offset[&arg_slot_iter.0]
                 ));
             }
             let mut stack_offset = 16; // return address is 8 bytes. saved rbp is also 8 bytes.
@@ -233,7 +244,8 @@ impl Assembler {
             } else {
                 self.emit_label(&block_ref_to_label[block_ref.0]);
             }
-            for inst_ref in l.method.block(block_ref).insts.iter() {
+            let insts = &l.method.block(block_ref).insts;
+            for (i, inst_ref) in insts.iter().enumerate() {
                 let inst = l.method.inst(*inst_ref);
                 if let Some(annotation) = l.method.get_inst_annotation(inst_ref) {
                     for span in annotation.spans() {
@@ -442,11 +454,26 @@ impl Assembler {
                         method: callee_name,
                         args,
                     } => {
-                        let get_arg = |arg_ref: &InstRef| {
-                            if l.mem_args
+                        let next_pt = if i == insts.len() - 1 {
+                            ProgPt::BeforeTerm(block_ref)
+                        } else {
+                            ProgPt::BeforeInst(insts[i + 1])
+                        };
+                        let saving_regs = l.live_at[&next_pt]
+                            .iter()
+                            .filter_map(|v| l.reg.get(v))
+                            .filter(|v| CALLER_SAVE_REGS.contains(&REGS[**v]))
+                            .collect::<BTreeSet<_>>();
+                        for reg in saving_regs.iter() {
+                            self.emit_code(format!("pushq {}", REGS[**reg]));
+                        }
+                        let is_in_mem = |arg_ref: &InstRef| {
+                            l.mem_args
                                 .get(inst_ref)
                                 .map_or(false, |mem| mem.contains(arg_ref))
-                            {
+                        };
+                        let get_arg = |arg_ref: &InstRef| {
+                            if is_in_mem(arg_ref) {
                                 if let Some(stack_slot) = l.spill_slots.get(arg_ref) {
                                     format!("{}(%rbp)", stack_slot_to_offset[&stack_slot])
                                 } else {
@@ -464,16 +491,10 @@ impl Assembler {
                                 reg![arg_ref].to_string()
                             }
                         };
-                        for (arg_idx, arg_ref) in args.iter().enumerate().take(6) {
-                            self.emit_code(format!(
-                                "movq {}, {}",
-                                get_arg(arg_ref),
-                                arg_registers[arg_idx]
-                            ));
-                        }
-                        let n_remaining_args = args.len().saturating_sub(6);
+
                         let mut stack_space_for_args = 0;
-                        if n_remaining_args % 2 == 1 {
+                        let n_remaining_args = args.len().saturating_sub(6);
+                        if (n_remaining_args + saving_regs.len()) % 2 == 1 {
                             // Align stack to 16 bytes
                             self.emit_code("subq $8, %rsp".to_string());
                             stack_space_for_args += 8;
@@ -482,6 +503,47 @@ impl Assembler {
                             self.emit_code(format!("pushq {}", get_arg(arg_ref)));
                             stack_space_for_args += 8;
                         }
+
+                        let mut par_copies = HashSet::new();
+                        let mut ser_copies = vec![];
+                        for (arg_idx, arg_ref) in args.iter().enumerate().take(6) {
+                            // If we use a register that is also used for argument passing, ...
+                            if let Some(reg_idx) = REGS.iter().position(|r| *r == ARG_REGS[arg_idx])
+                            {
+                                // And the argument is not in memory / needs to
+                                // be materialized, but stored in another
+                                // argument-passing register
+                                if !is_in_mem(arg_ref) && ARG_REGS.contains(&reg![arg_ref]) {
+                                    // Then such copies need to be scheduled
+                                    // with care so as not to overwrite the
+                                    // argument.
+                                    par_copies.insert((l.reg[arg_ref], reg_idx));
+                                    continue;
+                                }
+                            }
+                            ser_copies.push((arg_idx, arg_ref));
+                        }
+                        if !par_copies.is_empty() {
+                            self.emit_code(format!("# Parallel argument copy: {:?}", par_copies));
+                            for step in serialize_copies(par_copies, None) {
+                                match step {
+                                    SerializedStep::Copy { from, to } => {
+                                        self.emit_code(format!("movq {}, {}", REGS[from], REGS[to]))
+                                    }
+                                    SerializedStep::Swap(a, b) => {
+                                        self.emit_code(format!("xchg {}, {}", REGS[a], REGS[b]))
+                                    }
+                                }
+                            }
+                        }
+                        for (arg_idx, arg_ref) in ser_copies {
+                            self.emit_code(format!(
+                                "movq {}, {}",
+                                get_arg(arg_ref),
+                                ARG_REGS[arg_idx]
+                            ));
+                        }
+
                         self.emit_code(format!("call {}", callee_name));
                         if stack_space_for_args > 0 {
                             self.emit_code(format!("addq ${}, %rsp", stack_space_for_args));
@@ -491,6 +553,9 @@ impl Assembler {
                             Some(method) => method.return_ty != Type::Void,
                             None => true,
                         };
+                        for reg in saving_regs.iter().rev() {
+                            self.emit_code(format!("popq {}", REGS[**reg]));
+                        }
                         if returns_value && l.reg.contains_key(inst_ref) {
                             self.emit_code(format!("movq %rax, {}", reg![inst_ref]));
                         }
@@ -527,7 +592,7 @@ impl Assembler {
                     for step in serialize_copies(par_copies_reg, None) {
                         match step {
                             SerializedStep::Copy { from, to } => {
-                                self.emit_code(format!("mov {}, {}", REGS[from], REGS[to]))
+                                self.emit_code(format!("movq {}, {}", REGS[from], REGS[to]))
                             }
                             SerializedStep::Swap(a, b) => {
                                 self.emit_code(format!("xchg {}, {}", REGS[a], REGS[b]))
