@@ -305,6 +305,36 @@ impl<'a> Spiller<'a> {
         ret
     }
 
+    /// Checks if an instruction is (cheaply) rematerializable.
+    fn is_rematerializable(&self, inst_ref: InstRef) -> bool {
+        match self.method.inst(inst_ref) {
+            Inst::LoadConst(_) => true,
+            // More cases can be added here.
+            _ => false,
+        }
+    }
+
+    fn rematerialize(&self, inst_ref: InstRef) -> Inst {
+        match self.method.inst(inst_ref) {
+            Inst::LoadConst(c) => Inst::LoadConst(c.clone()),
+            // More cases can be added here.
+            _ => unreachable!(),
+        }
+    }
+
+    fn spill_weight_with_rematerialization(&self, h: &BeladyMap, var: &InstRef) -> isize {
+        let mut base_weight = h.get(var);
+        if base_weight == 0 {
+            // If base weight is 0, var is immediately used. Don't spill anyway.
+            return 0;
+        }
+        if self.is_rematerializable(*var) {
+            // Rematerialization is cheap, so we prefer to spill it.
+            base_weight = base_weight.saturating_add(100); // Some arbitrary large number.
+        }
+        base_weight
+    }
+
     /// Initialize the set of registers to be used at the beginning of a block.
     /// Returns two sets, reg_in and spill_in. reg_in is the set of variables
     /// assumed to be in register at the start of a block (e.g., first program
@@ -369,7 +399,7 @@ impl<'a> Spiller<'a> {
             .saturating_sub(max_pressure.saturating_sub(delayed.len()));
         let mut n_free_slots = n_free_slots.min(n_free_pressure_slots);
         if n_free_slots > 0 {
-            delayed.sort_by_key(|var| (h.get(var), var.0));
+            delayed.sort_by_key(|var| (self.spill_weight_with_rematerialization(h, var), var.0));
             for var in delayed.iter() {
                 if n_free_slots == 0 {
                     break;
@@ -491,17 +521,6 @@ impl<'a> Spiller<'a> {
     /// Adds a phi-spill to the list of phi-spills.
     fn add_phi_spill(&mut self, phi_var: InstRef) {
         self.phi_spills.insert(phi_var);
-        // if self.phi_spills.insert(phi_var) {
-        //     let Inst::Phi(map) = self.method.inst(phi_var) else {
-        //         unreachable!();
-        //     };
-        //     for (pred, var) in map.clone() {
-        //         // Note: this can unnecessarily introduce spills when a node has
-        //         // already been spilled. They will be removed in
-        //         // remove_dead_spills.
-        //         self.add_spill(&ProgPt::BeforeTerm(pred), var);
-        //     }
-        // }
     }
 
     fn add_phi_pre_spills(&mut self) {
@@ -583,7 +602,8 @@ impl<'a> Spiller<'a> {
                 return;
             }
             let mut live_vec = live.iter().cloned().collect::<Vec<_>>();
-            live_vec.sort_by_key(|var| (h.get(var), var.0));
+            live_vec
+                .sort_by_key(|var| (spiller.spill_weight_with_rematerialization(h, var), var.0));
             for var in live_vec.iter().skip(count) {
                 if !spilled.contains(var) && h.is_live(var) {
                     spiller.add_spill(spill_pt, *var);
@@ -681,7 +701,25 @@ impl<'a> Spiller<'a> {
         // Identify variables that have been split and reloaded. These variables
         // have their SSA forms broken and we need to fix them.
         let mut var_to_def_blocks: HashMap<InstRef, HashSet<BlockRef>> = HashMap::new();
+
         // And create one spill slot for each spilled variable.
+
+        // Start by creating spill slots for phi-spills.
+        let mut phi_spills_sorted = self.phi_spills.iter().collect::<Vec<_>>();
+        phi_spills_sorted.sort_by_key(|inst_ref| inst_ref.0);
+        let mut used_by_phi_spills: HashSet<InstRef> = HashSet::new();
+        for inst_ref in phi_spills_sorted {
+            self.spill_slots.entry(*inst_ref).or_insert_with(|| {
+                let ty = self.program.infer_inst_type(&self.method, *inst_ref);
+                let name = make_internal_ident(&format!("spill slot for {}", inst_ref));
+                new_method.next_stack_slot(ty, name)
+            });
+            let Inst::Phi(map) = self.method.inst(*inst_ref) else {
+                unreachable!();
+            };
+            used_by_phi_spills.extend(map.values().cloned());
+        }
+
         // Sort keys for determinism.
         let mut spill_reloads_sorted = self.spill_reloads.keys().collect::<Vec<_>>();
         spill_reloads_sorted.sort_by_key(|prog_pt| match prog_pt {
@@ -702,11 +740,13 @@ impl<'a> Spiller<'a> {
                 let inst_ref = match sr {
                     ReloadSpill::Reload(inst) | ReloadSpill::Spill(inst) => *inst,
                 };
-                self.spill_slots.entry(inst_ref).or_insert_with(|| {
-                    let ty = self.program.infer_inst_type(&self.method, inst_ref);
-                    let name = make_internal_ident(&format!("spill slot for {}", inst_ref));
-                    new_method.next_stack_slot(ty, name)
-                });
+                if !self.is_rematerializable(inst_ref) || used_by_phi_spills.contains(&inst_ref) {
+                    self.spill_slots.entry(inst_ref).or_insert_with(|| {
+                        let ty = self.program.infer_inst_type(&self.method, inst_ref);
+                        let name = make_internal_ident(&format!("spill slot for {}", inst_ref));
+                        new_method.next_stack_slot(ty, name)
+                    });
+                }
                 let def_blocks = var_to_def_blocks.entry(inst_ref).or_default();
                 def_blocks.insert(self.inst_to_block_pos[inst_ref.0].0);
                 // Reloads are essentially redefinitions of the variable.
@@ -714,16 +754,6 @@ impl<'a> Spiller<'a> {
                     def_blocks.insert(block_ref);
                 }
             }
-        }
-
-        let mut phi_spills_sorted = self.phi_spills.iter().collect::<Vec<_>>();
-        phi_spills_sorted.sort_by_key(|inst_ref| inst_ref.0);
-        for inst_ref in phi_spills_sorted {
-            self.spill_slots.entry(*inst_ref).or_insert_with(|| {
-                let ty = self.program.infer_inst_type(&self.method, *inst_ref);
-                let name = make_internal_ident(&format!("spill slot for {}", inst_ref));
-                new_method.next_stack_slot(ty, name)
-            });
         }
 
         // Convert loads and spills into SSA instructions.
@@ -739,12 +769,25 @@ impl<'a> Spiller<'a> {
                             };
                             let new_inst = match sr {
                                 ReloadSpill::Reload(var) => {
-                                    Inst::Load(Address::Local(self.spill_slots[var]))
+                                    if !self.is_rematerializable(*var) {
+                                        Inst::Load(Address::Local(self.spill_slots[var]))
+                                    } else {
+                                        self.rematerialize(*var)
+                                    }
                                 }
-                                ReloadSpill::Spill(var) => Inst::Store {
-                                    addr: Address::Local(self.spill_slots[var]),
-                                    value: *var,
-                                },
+                                ReloadSpill::Spill(var) => {
+                                    if !self.is_rematerializable(*var)
+                                        || used_by_phi_spills.contains(var)
+                                    {
+                                        Inst::Store {
+                                            addr: Address::Local(self.spill_slots[var]),
+                                            value: *var,
+                                        }
+                                    } else {
+                                        // No need to generate spill for rematerializable variables.
+                                        continue;
+                                    }
+                                }
                             };
                             let new_inst_ref = match prev {
                                 Some(prev) => m.next_inst_after(block, new_inst, prev),
@@ -951,6 +994,7 @@ impl<'a> Spiller<'a> {
     }
 
     // Dump the method to a graphviz dot file, for debugging.
+    #[allow(dead_code)]
     pub fn dump_graphviz(&self) -> String {
         let mut output = "digraph G {\n".to_string();
         output.push_str("  rankdir=TD;\n");

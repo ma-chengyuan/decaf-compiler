@@ -447,8 +447,19 @@ impl Assembler {
                                 .get(inst_ref)
                                 .map_or(false, |mem| mem.contains(arg_ref))
                             {
-                                let stack_slot = l.spill_slots[arg_ref];
-                                format!("{}(%rbp)", stack_slot_to_offset[&stack_slot])
+                                if let Some(stack_slot) = l.spill_slots.get(arg_ref) {
+                                    format!("{}(%rbp)", stack_slot_to_offset[&stack_slot])
+                                } else {
+                                    // Marked as mem arg but not spilled, so it must have been rematerialized
+                                    match l.method.inst(*arg_ref) {
+                                        Inst::LoadConst(c) => match c {
+                                            Const::Int(val) => format!("${}", val),
+                                            Const::Bool(val) => format!("${}", *val as i64),
+                                            _ => unreachable!(),
+                                        },
+                                        _ => unreachable!(),
+                                    }
+                                }
                             } else {
                                 reg![arg_ref].to_string()
                             }
