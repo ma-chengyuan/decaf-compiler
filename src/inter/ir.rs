@@ -349,13 +349,13 @@ impl fmt::Display for Annotation {
             strings.push(str.clone());
         }
         if let Some(span) = &self.span {
-            strings.push(span.source_str());
+            strings.push(span.source_str().escape_default().to_string());
         }
         if let Some(ident) = &self.ident {
             strings.push(ident.inner.to_string());
         }
         strings.extend(self.children.iter().map(|a| a.to_string()));
-        write!(f, "{}", strings.join(", "))?;
+        write!(f, "{}", strings.join(" "))?;
         Ok(())
     }
 }

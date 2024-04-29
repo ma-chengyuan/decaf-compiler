@@ -88,7 +88,8 @@ impl Assembler {
 
     #[allow(dead_code)]
     fn emit_annotated_code<T: std::fmt::Display>(&mut self, code: T, annotation: &str) {
-        self.code.push(format!("    {}     # {}", code, annotation));
+        self.code
+            .push(format!("    {:<30}     # {}", code, annotation));
     }
 
     fn emit_label(&mut self, label: &str) {
