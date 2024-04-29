@@ -63,14 +63,7 @@ impl<'a> RegAllocator<'a> {
                 };
                 live.remove(&phi);
                 let var = map[&block_ref];
-                let in_mem = self
-                    .l
-                    .mem_args
-                    .get(&phi)
-                    .map_or(false, |mem| mem.contains(&var));
-                if !in_mem {
-                    live.insert(var);
-                }
+                live.insert(var);
             }
         });
         self.live_at

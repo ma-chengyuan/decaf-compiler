@@ -562,16 +562,6 @@ impl<'a> Spiller<'a> {
                 }
             }
         }
-        // for phi in phis {
-        //     let Inst::Phi(map) = self.method.inst(phi) else {
-        //         unreachable!();
-        //     };
-        //     for var in map.values() {
-        //         if !reg_in.contains(var) {
-        //             self.mem_args.entry(phi).or_default().insert(*var);
-        //         }
-        //     }
-        // }
     }
 
     /// Insert spills and reloads to ensure that the register pressure at a
@@ -889,11 +879,6 @@ impl<'a> Spiller<'a> {
                             // This is so ugly. I fought the borrow checker so hard...
                             if self.phi_spills.contains(&inst_ref) {
                                 continue; // Skip memory phis. They will be dealt with later.
-                            }
-                            if let Some(mem_args) = self.mem_args.get(&inst_ref) {
-                                if mem_args.contains(&var) {
-                                    continue; // No need to fix usage of memory arguments.
-                                }
                             }
                             let mut new_map = map.clone();
                             for (block, src) in new_map.iter_mut() {

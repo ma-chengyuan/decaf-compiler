@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use crate::{
     assembler::par_copy::{serialize_copies, SerializedStep},
@@ -51,6 +51,8 @@ pub struct LoweredMethod {
 }
 
 /// Use callee-saved registers for now
+// pub const REGS: [&str; 3] = ["%r12", "%r13", "%r14"];
+// pub const REGS: [&str; 4] = ["%r12", "%r13", "%r14", "%r15"];
 pub const REGS: [&str; 5] = ["%r12", "%r13", "%r14", "%r15", "%rbx"];
 
 pub struct Assembler {
@@ -97,417 +99,6 @@ impl Assembler {
         self.code.push(format!("{}:     # {}", label, annotation));
     }
 
-    /// Compiles the given program and returns the corresponding assembly code
-    pub fn assemble(&mut self, file_name: &str) -> String {
-        // todo: remove the .clone()
-        for global in self.program.globals.clone().values() {
-            self.assemble_global(global);
-        }
-
-        // todo: remove the .clone()
-        for method in self.program.methods.clone().values() {
-            self.assemble_method(method);
-        }
-
-        self.emit_data_label("index_out_of_bounds_msg");
-        self.emit_data_code(".string \"Error: index out of bounds on line %d. Array length is %d; queried index is %d.\\n\"");
-
-        self.emit_data_label("no_return_value_msg");
-        self.emit_data_code(
-            ".string \"Error: Method finished without returning anything when it should have.\\n\"",
-        );
-
-        let mut output = format!(".file 0 \"{}\"\n.data\n", file_name);
-        for data in self.data.iter() {
-            output.push_str(data.as_str());
-            output.push('\n');
-        }
-        output.push('\n');
-        output.push_str(".text\n");
-        output.push_str(".globl main\n");
-        for code in self.code.iter() {
-            output.push_str(code.as_str());
-            output.push('\n');
-        }
-        output
-    }
-
-    fn assemble_method(&mut self, method: &Method) {
-        self.emit_label(&method.name.inner);
-        let arg_registers = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"];
-
-        // Compute stack spaces
-        let mut stack_space = 0i64;
-        // Everything has a home on the stack -- for now?
-        let mut stack_slot_to_offset: HashMap<StackSlotRef, i64> = HashMap::new();
-        for (stack_slot_ref, stack_slot) in method.iter_slack_slots() {
-            stack_space += stack_slot.ty.size() as i64;
-            stack_slot_to_offset.insert(stack_slot_ref, -stack_space);
-        }
-        let mut inst_to_offset: HashMap<InstRef, i64> = HashMap::new();
-
-        macro_rules! block_ref_to_label {
-            ($block_ref:expr) => {
-                format!("{}_method_{}", $block_ref, method.name.inner)
-            };
-        }
-
-        for (inst_ref, _) in method.iter_insts() {
-            let size = self.program.infer_inst_type(method, inst_ref).size();
-            stack_space += size as i64;
-            // todo: should this line go here or at the top of the for loop?
-            inst_to_offset.insert(inst_ref, -stack_space);
-        }
-        // Align stack space to 16 bytes
-        stack_space = (stack_space + 15) & !15;
-
-        self.emit_code(format!(
-            ".loc 0 {} {}",
-            method.span.start().line,
-            method.span.start().column
-        ));
-        self.emit_code("push %rbp".to_string());
-        self.emit_code("movq %rsp, %rbp".to_string());
-        self.emit_code(format!("subq ${}, %rsp", stack_space));
-        // self.emit_code(format!("enterq ${}, $0", stack_space));
-        // Save all callee-saved registers
-        for reg in &["rbx", "rbp", "r12", "r13", "r14", "r15"] {
-            self.emit_code(format!("pushq %{}", reg));
-        }
-
-        // parameters 1..n are mapped to the first n stack slots by our IR builder
-        {
-            let n_args = method.params.len();
-            for (arg_idx, arg_slot_iter) in
-                method.iter_slack_slots().enumerate().take(n_args).take(6)
-            {
-                self.emit_code(format!(
-                    "movq %{}, {}(%rbp)",
-                    arg_registers[arg_idx], stack_slot_to_offset[&arg_slot_iter.0]
-                ));
-            }
-            let mut stack_offset = 16; // return address is 8 bytes. saved rbp is also 8 bytes.
-            for (arg_slot_ref, arg_slot) in method.iter_slack_slots().take(n_args).skip(6) {
-                self.emit_code(format!("movq {}(%rbp), %rax", stack_offset));
-                stack_offset += arg_slot.ty.size() as i64;
-                self.emit_code(format!(
-                    "movq %rax, {}(%rbp)",
-                    stack_slot_to_offset[&arg_slot_ref]
-                ));
-            }
-        }
-
-        let get_inst_ref_location = |iref: InstRef| format!("{}(%rbp)", inst_to_offset[&iref]);
-
-        // The entry block is assumed to be the first block in the method for now
-        assert!(method.entry == method.iter_blocks().next().unwrap().0);
-        for (block_ref, block) in method.iter_blocks() {
-            if let Some(block_annotation) = method.get_block_annotation(&block_ref) {
-                self.emit_annotated_label(
-                    &block_ref_to_label!(block_ref),
-                    &block_annotation.to_string(),
-                );
-            } else {
-                self.emit_label(&block_ref_to_label!(block_ref));
-            }
-
-            for (inst_ref, inst) in block.insts.iter().map(|iref| (*iref, method.inst(*iref))) {
-                if let Some(annotation) = method.get_inst_annotation(&inst_ref) {
-                    for span in annotation.spans() {
-                        let start_loc = span.start().to_owned();
-                        self.emit_annotated_code(
-                            format!(".loc 0 {} {}", start_loc.line, start_loc.column),
-                            &annotation.to_string(),
-                        );
-                    }
-                } else {
-                    self.emit_code(format!("# No annotation available for inst {}", inst));
-                }
-                match inst {
-                    Inst::Copy(src) => {
-                        self.emit_code(format!("movq {}, %rax", get_inst_ref_location(*src)));
-                        self.emit_code(format!("movq %rax, {}", get_inst_ref_location(inst_ref)));
-                    }
-                    Inst::Add(lhs, rhs) | Inst::Sub(lhs, rhs) | Inst::Mul(lhs, rhs) => {
-                        let inst_name = match inst {
-                            Inst::Add(_, _) => "add",
-                            Inst::Sub(_, _) => "sub",
-                            Inst::Mul(_, _) => "imul",
-                            _ => unreachable!(),
-                        };
-                        self.emit_code(format!("movq {}, %rax", get_inst_ref_location(*lhs)));
-                        self.emit_code(format!(
-                            "{}q {}, %rax",
-                            inst_name,
-                            get_inst_ref_location(*rhs)
-                        ));
-                        self.emit_code(format!("movq %rax, {}", get_inst_ref_location(inst_ref)));
-                    }
-                    Inst::Div(lhs, rhs) | Inst::Mod(lhs, rhs) => {
-                        self.emit_code(format!("movq {}, %rax", get_inst_ref_location(*lhs)));
-                        self.emit_code("cqto"); // Godbolt does it
-                        self.emit_code(format!("idivq {}", get_inst_ref_location(*rhs)));
-
-                        // Behavior depends on whether div or mod
-                        self.emit_code(format!(
-                            "movq %{}, {}",
-                            match inst {
-                                Inst::Div(_, _) => "rax",
-                                Inst::Mod(_, _) => "rdx",
-                                _ => unreachable!(),
-                            },
-                            get_inst_ref_location(inst_ref)
-                        ));
-                    }
-                    Inst::Neg(var) => {
-                        self.emit_code(format!("movq {}, %rax", get_inst_ref_location(*var)));
-                        self.emit_code("negq %rax");
-                        self.emit_code(format!("movq %rax, {}", get_inst_ref_location(inst_ref)));
-                    }
-                    Inst::Not(var) => {
-                        self.emit_code(format!("cmpq $0, {}", get_inst_ref_location(*var)));
-                        self.emit_code("sete %al");
-                        self.emit_code("movzbq %al, %rax");
-                        self.emit_code(format!("movq %rax, {}", get_inst_ref_location(inst_ref)));
-                    }
-                    Inst::Eq(lhs, rhs) => {
-                        self.emit_code(format!("movq {}, %rax", get_inst_ref_location(*rhs)));
-                        self.emit_code(format!("cmpq %rax, {}", get_inst_ref_location(*lhs)));
-                        self.emit_code("sete %al");
-                        self.emit_code("movzbq %al, %rax");
-                        self.emit_code(format!("movq %rax, {}", get_inst_ref_location(inst_ref)));
-                    }
-                    Inst::Neq(lhs, rhs) => {
-                        self.emit_code(format!("movq {}, %rax", get_inst_ref_location(*rhs)));
-                        self.emit_code(format!("cmpq %rax, {}", get_inst_ref_location(*lhs)));
-                        self.emit_code("setne %al");
-                        self.emit_code("movzbq %al, %rax");
-                        self.emit_code(format!("movq %rax, {}", get_inst_ref_location(inst_ref)));
-                    }
-                    Inst::Less(lhs, rhs) => {
-                        self.emit_code(format!("movq {}, %rax", get_inst_ref_location(*rhs)));
-                        self.emit_code(format!("cmpq %rax, {}", get_inst_ref_location(*lhs)));
-                        self.emit_code("setl %al");
-                        self.emit_code("movzbq %al, %rax");
-                        self.emit_code(format!("movq %rax, {}", get_inst_ref_location(inst_ref)));
-                    }
-                    Inst::LessEq(lhs, rhs) => {
-                        self.emit_code(format!("movq {}, %rax", get_inst_ref_location(*rhs)));
-                        self.emit_code(format!("cmpq %rax, {}", get_inst_ref_location(*lhs)));
-                        self.emit_code("setle %al");
-                        self.emit_code("movzbq %al, %rax");
-                        self.emit_code(format!("movq %rax, {}", get_inst_ref_location(inst_ref)));
-                    }
-                    Inst::LoadConst(value) => {
-                        self.load_int_or_bool_const(value, &get_inst_ref_location(inst_ref));
-                    }
-                    Inst::Load(addr) => {
-                        match addr {
-                            Address::Global(name) => {
-                                self.emit_code(format!("movq {}(%rip), %rax", name));
-                            }
-                            Address::Local(stack_slot) => {
-                                self.emit_code(format!(
-                                    "movq {}(%rbp), %rax",
-                                    stack_slot_to_offset[stack_slot]
-                                ));
-                            }
-                        }
-                        self.emit_code(format!("movq %rax, {}", get_inst_ref_location(inst_ref)));
-                    }
-                    Inst::Store { addr, value } => {
-                        self.emit_code(format!("movq {}, %rax", get_inst_ref_location(*value)));
-                        match addr {
-                            Address::Global(name) => {
-                                self.emit_code(format!("movq %rax, {}(%rip)", name));
-                            }
-                            Address::Local(stack_slot) => {
-                                self.emit_code(format!(
-                                    "movq %rax, {}(%rbp)",
-                                    stack_slot_to_offset[stack_slot]
-                                ));
-                            }
-                        }
-                    }
-                    Inst::LoadArray { addr, index } => {
-                        // Do bound check first
-                        self.emit_code(format!("movq {}, %rax", get_inst_ref_location(*index)));
-                        let (length, elem_size) =
-                            match self.program.infer_address_type(method, addr) {
-                                Type::Array { length, base } => (*length, base.size()),
-                                _ => unreachable!(),
-                            };
-                        self.emit_bounds_check("%rax", length, method.get_inst_annotation(index));
-                        match addr {
-                            Address::Global(name) => {
-                                self.emit_code(format!(
-                                    "movq {}(, %rax, {}), %rax",
-                                    name, elem_size
-                                ));
-                            }
-                            Address::Local(stack_slot) => {
-                                self.emit_code(format!(
-                                    "movq {}(%rbp, %rax, {}), %rax",
-                                    stack_slot_to_offset[stack_slot], elem_size
-                                ));
-                            }
-                        }
-                        self.emit_code(format!("movq %rax, {}", get_inst_ref_location(inst_ref)));
-                    }
-                    Inst::StoreArray { addr, index, value } => {
-                        self.emit_code(format!("movq {}, %rax", get_inst_ref_location(*index)));
-                        let (length, elem_size) =
-                            match self.program.infer_address_type(method, addr) {
-                                Type::Array { length, base } => (*length, base.size()),
-                                _ => unreachable!(),
-                            };
-                        self.emit_bounds_check("%rax", length, method.get_inst_annotation(index));
-                        self.emit_code(format!("movq {}, %rcx", get_inst_ref_location(*value)));
-                        match addr {
-                            Address::Global(name) => {
-                                self.emit_code(format!(
-                                    "movq %rcx, {}(, %rax, {})",
-                                    name, elem_size
-                                ));
-                            }
-                            Address::Local(stack_slot) => {
-                                self.emit_code(format!(
-                                    "movq %rcx, {}(%rbp, %rax, {})",
-                                    stack_slot_to_offset[stack_slot], elem_size
-                                ));
-                            }
-                        }
-                    }
-                    Inst::Initialize { stack_slot, value } => match value {
-                        Const::Int(_) | Const::Bool(_) => {
-                            self.load_int_or_bool_const(
-                                value,
-                                &format!("{}(%rbp)", stack_slot_to_offset[stack_slot]),
-                            );
-                        }
-                        Const::Array(arr_vals) => {
-                            let mut stack_slot = stack_slot_to_offset[stack_slot];
-                            for val in arr_vals.iter() {
-                                self.load_int_or_bool_const(val, &format!("{}(%rbp)", stack_slot));
-                                stack_slot += val.size() as i64;
-                            }
-                        }
-                    },
-                    Inst::Call {
-                        method: callee_name,
-                        args,
-                    } => {
-                        for (arg_idx, arg_ref) in args.iter().enumerate().take(6) {
-                            self.emit_code(format!(
-                                "movq {}, %{}",
-                                get_inst_ref_location(*arg_ref),
-                                arg_registers[arg_idx]
-                            ));
-                        }
-                        let n_remaining_args = args.len().saturating_sub(6);
-                        let mut stack_space_for_args = 0;
-                        if n_remaining_args % 2 == 1 {
-                            // Align stack to 16 bytes
-                            self.emit_code("subq $8, %rsp".to_string());
-                            stack_space_for_args += 8;
-                        }
-                        for arg_ref in args.iter().skip(6).rev() {
-                            self.emit_code(format!("pushq {}", get_inst_ref_location(*arg_ref)));
-                            stack_space_for_args += 8;
-                        }
-                        self.emit_code(format!("call {}", callee_name));
-                        if stack_space_for_args > 0 {
-                            self.emit_code(format!("addq ${}, %rsp", stack_space_for_args));
-                        }
-                        let returns_value = match self.program.methods.get(&callee_name.to_string())
-                        {
-                            Some(method) => method.return_ty != Type::Void,
-                            None => true,
-                        };
-                        if returns_value {
-                            self.emit_code(format!(
-                                "movq %rax, {}",
-                                get_inst_ref_location(inst_ref)
-                            ));
-                        }
-                    }
-                    Inst::LoadStringLiteral(s) => {
-                        let str_name = format!("str_{}", self.data.len());
-                        self.emit_data_label(&str_name);
-                        self.emit_data_code(format!(".string {:?}", s));
-                        self.emit_code(format!("leaq {}(%rip), %rax", str_name));
-                        self.emit_code(format!("movq %rax, {}", get_inst_ref_location(inst_ref)));
-                    }
-                    Inst::Phi(_) | Inst::PhiMem { .. } => {
-                        unimplemented!("Phi nodes not supported in assembly")
-                    }
-                    Inst::Illegal => unreachable!(),
-                }
-            }
-
-            self.emit_code(format!(
-                "# Terminating block {}",
-                block_ref_to_label!(block_ref)
-            ));
-            match &block.term {
-                Terminator::Return(ret) => {
-                    if method.return_ty != Type::Void && ret.is_none() {
-                        // method finished without returning anything, but it should have. exit with -2
-                        self.emit_code("leaq no_return_value_msg(%rip), %rdi");
-                        self.emit_code("call printf");
-                        self.emit_code("movq $-2, %rdi");
-                        self.emit_code("call exit");
-                    } else {
-                        if let Some(ret) = ret {
-                            if let Some(annotation) = method.get_inst_annotation(ret) {
-                                for span in annotation.spans() {
-                                    self.emit_code(format!(
-                                        ".loc 0 {} {}",
-                                        span.start().line,
-                                        span.start().column
-                                    ));
-                                }
-                            }
-                            self.emit_code(format!("movq {}, %rax", get_inst_ref_location(*ret)));
-                        }
-
-                        self.emit_code(format!(
-                            ".loc 0 {} {}",
-                            method.span.end().line,
-                            method.span.end().column - 1 // exclusive
-                        ));
-
-                        if method.name.inner.as_ref() == "main" {
-                            assert!(ret.is_none());
-                            // return 0;
-                            self.emit_code("movq $0, %rax");
-                        }
-
-                        // Restore all callee-saved registers
-                        for reg in ["rbx", "rbp", "r12", "r13", "r14", "r15"].iter().rev() {
-                            self.emit_code(format!("popq %{}", reg));
-                        }
-                        // Restore stack frame
-                        self.emit_code("leave");
-                        self.emit_code("ret");
-                    }
-                }
-                Terminator::Jump(target) => {
-                    self.emit_code(format!("jmp {}", block_ref_to_label!(target)));
-                }
-                Terminator::CondJump {
-                    cond,
-                    true_,
-                    false_,
-                } => {
-                    self.emit_code(format!("cmpq $0, {}", get_inst_ref_location(*cond)));
-                    self.emit_code(format!("je {}", block_ref_to_label!(false_)));
-                    self.emit_code(format!("jmp {}", block_ref_to_label!(true_)));
-                }
-            }
-        }
-    }
-
     pub fn assemble_lowered(&mut self, file_name: &str) -> String {
         // todo: remove the .clone()
         for global in self.program.globals.clone().values() {
@@ -515,8 +106,7 @@ impl Assembler {
         }
 
         for method in self.program.methods.clone().values() {
-            let max_reg = 5;
-            let mut lowered = Spiller::new(&self.program, method, max_reg).spill();
+            let mut lowered = Spiller::new(&self.program, method, REGS.len()).spill();
             RegAllocator::new(&self.program, &mut lowered).allocate();
             self.assemble_lowered_method(&lowered);
         }
@@ -546,7 +136,8 @@ impl Assembler {
 
     fn assemble_lowered_method(&mut self, l: &LoweredMethod) {
         self.emit_label(&l.method.name.inner);
-        let arg_registers = ["rdi", "rsi", "rdx", "rcx", "r8", "r9"];
+        let arg_registers = ["%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"];
+
         // Compute stack spaces
         let mut stack_space = 0i64;
         // Everything has a home on the stack -- for now?
@@ -560,8 +151,20 @@ impl Assembler {
             block_ref_to_label[block_ref.0] =
                 format!("{}_method_{}", block_ref, l.method.name.inner);
         }
+        let tainted_callee_saved_regs = l
+            .reg
+            .values()
+            .map(|&r| REGS[r])
+            .filter(|&r| ["%rbx", "%r12", "%r13", "%r14", "%r15"].contains(&r))
+            .collect::<BTreeSet<_>>();
         // Align stack space to 16 bytes
         stack_space = (stack_space + 15) & !15;
+        if tainted_callee_saved_regs.len() % 2 == 1 {
+            // Extra 8 bytes to ensure stack is aligned to 16 bytes after
+            // pushing all tainted callee-saved registers
+            stack_space += 8;
+        }
+
         self.emit_code(format!(
             ".loc 0 {} {}",
             l.method.span.start().line,
@@ -570,17 +173,19 @@ impl Assembler {
         self.emit_code("push %rbp".to_string());
         self.emit_code("movq %rsp, %rbp".to_string());
         self.emit_code(format!("subq ${}, %rsp", stack_space));
+
         // Save all callee-saved registers
-        for reg in &["rbx", "rbp", "r12", "r13", "r14", "r15"] {
-            self.emit_code(format!("pushq %{}", reg));
+        for reg in tainted_callee_saved_regs.iter() {
+            self.emit_code(format!("pushq {}", reg));
         }
+
         {
             let n_args = l.method.params.len();
             for (arg_idx, arg_slot_iter) in
                 l.method.iter_slack_slots().enumerate().take(n_args).take(6)
             {
                 self.emit_code(format!(
-                    "movq %{}, {}(%rbp)",
+                    "movq {}, {}(%rbp)",
                     arg_registers[arg_idx], stack_slot_to_offset[&arg_slot_iter.0]
                 ));
             }
@@ -679,7 +284,9 @@ impl Assembler {
                     }
                     Inst::Neg(var) => {
                         skip_non_side_effective!();
-                        self.emit_code(format!("movq {}, {}", reg![var], reg![inst_ref]));
+                        if l.reg[var] != l.reg[inst_ref] {
+                            self.emit_code(format!("movq {}, {}", reg![var], reg![inst_ref]));
+                        }
                         self.emit_code(format!("negq {}", reg![inst_ref]));
                     }
                     Inst::Not(var) => {
@@ -840,7 +447,7 @@ impl Assembler {
                         };
                         for (arg_idx, arg_ref) in args.iter().enumerate().take(6) {
                             self.emit_code(format!(
-                                "movq {}, %{}",
+                                "movq {}, {}",
                                 get_arg(arg_ref),
                                 arg_registers[arg_idx]
                             ));
@@ -876,22 +483,13 @@ impl Assembler {
             // println!("Handle phis for {}:{}", l.method.name.inner, block_ref);
             for_each_successor(&l.method, block_ref, |succ| {
                 let mut par_copies_reg: HashSet<(usize, usize)> = HashSet::new();
-                let mut copies_mem_reg: Vec<(StackSlotRef, usize)> = vec![];
                 let mut par_copies_mem: HashSet<(usize, usize)> = HashSet::new();
                 for inst_ref in l.method.block(succ).insts.iter() {
                     match l.method.inst(*inst_ref) {
                         Inst::Phi(map) => {
                             let var = map[&block_ref];
                             if l.reg.contains_key(inst_ref) {
-                                let in_mem = l
-                                    .mem_args
-                                    .get(inst_ref)
-                                    .map_or(false, |mem| mem.contains(&var));
-                                if !in_mem {
-                                    par_copies_reg.insert((l.reg[&var], l.reg[inst_ref]));
-                                } else {
-                                    copies_mem_reg.push((l.spill_slots[&var], l.reg[inst_ref]));
-                                }
+                                par_copies_reg.insert((l.reg[&var], l.reg[inst_ref]));
                             }
                         }
                         Inst::PhiMem { src, dst } => {
@@ -900,10 +498,12 @@ impl Assembler {
                         _ => break,
                     }
                 }
-                self.emit_code(format!(
-                    "# Phi reg: {:?} reg-mem: {:?} mem: {:?}",
-                    par_copies_reg, copies_mem_reg, par_copies_mem
-                ));
+                if !par_copies_reg.is_empty() || !par_copies_mem.is_empty() {
+                    self.emit_code(format!(
+                        "# Phi reg: {:?} mem: {:?}",
+                        par_copies_reg, par_copies_mem
+                    ));
+                }
                 if !par_copies_reg.is_empty() {
                     for step in serialize_copies(par_copies_reg, None) {
                         match step {
@@ -915,12 +515,6 @@ impl Assembler {
                             }
                         }
                     }
-                }
-                for (from, to) in copies_mem_reg {
-                    self.emit_code(format!(
-                        "movq {}(%rbp), {}",
-                        stack_slot_to_offset[&from], REGS[to]
-                    ));
                 }
                 if !par_copies_mem.is_empty() {
                     for step in serialize_copies(par_copies_mem, None) {
@@ -980,8 +574,8 @@ impl Assembler {
                             self.emit_code("movq $0, %rax");
                         }
                         // Restore all callee-saved registers
-                        for reg in ["rbx", "rbp", "r12", "r13", "r14", "r15"].iter().rev() {
-                            self.emit_code(format!("popq %{}", reg));
+                        for reg in tainted_callee_saved_regs.iter().rev() {
+                            self.emit_code(format!("popq {}", reg));
                         }
                         // Restore stack frame
                         self.emit_code("leave");
