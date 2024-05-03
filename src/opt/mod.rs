@@ -8,6 +8,7 @@ use crate::{
 
 use self::ssa::destruct_ssa;
 
+pub mod constant_folding;
 pub mod copy_prop;
 pub mod cse;
 pub mod dead_code;
@@ -161,24 +162,31 @@ pub fn optimize(mut program: Program, optimizations: &[Optimization]) -> Program
         *method = construct_ssa(method);
     }
 
-    // Dead code elimination
-    if optimizations.contains(&Optimization::DeadCodeElimination) {
+    for _ in 0..10 {
+        // Constant folding
         for method in program.methods.values_mut() {
-            dead_code::eliminate_dead_code(method);
+            constant_folding::fold_constants(method);
         }
-    }
 
-    // Copy propagation
-    if optimizations.contains(&Optimization::CopyPropagation) {
-        for method in program.methods.values_mut() {
-            copy_prop::propagate_copies(method);
+        // Copy propagation
+        if optimizations.contains(&Optimization::CopyPropagation) {
+            for method in program.methods.values_mut() {
+                copy_prop::propagate_copies(method);
+            }
         }
-    }
 
-    // Common subexpression elimination
-    if optimizations.contains(&Optimization::CommonSubexpressionElimination) {
-        for method in program.methods.values_mut() {
-            cse::eliminate_common_subexpressions(method);
+        // Common subexpression elimination
+        if optimizations.contains(&Optimization::CommonSubexpressionElimination) {
+            for method in program.methods.values_mut() {
+                cse::eliminate_common_subexpressions(method);
+            }
+        }
+
+        // Dead code elimination
+        if optimizations.contains(&Optimization::DeadCodeElimination) {
+            for method in program.methods.values_mut() {
+                dead_code::eliminate_dead_code(method);
+            }
         }
     }
 
