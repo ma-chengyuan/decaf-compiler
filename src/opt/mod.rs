@@ -13,6 +13,7 @@ pub mod copy_prop;
 pub mod cse;
 pub mod dead_code;
 pub mod dom;
+pub mod gvnpre;
 pub mod ssa;
 
 // Common graph algorithms for control flow graphs.
@@ -162,30 +163,36 @@ pub fn optimize(mut program: Program, optimizations: &[Optimization]) -> Program
         *method = construct_ssa(method);
     }
 
-    for _ in 0..10 {
-        // Constant folding
+    if optimizations.contains(&Optimization::GVNPRE) {
         for method in program.methods.values_mut() {
-            constant_folding::fold_constants(method);
+            gvnpre::gvnpre::perform_gvnpre(method);
         }
-
-        // Copy propagation
-        if optimizations.contains(&Optimization::CopyPropagation) {
+    } else {
+        for _ in 0..10 {
+            // Constant folding
             for method in program.methods.values_mut() {
-                copy_prop::propagate_copies(method);
+                constant_folding::fold_constants(method);
             }
-        }
 
-        // Common subexpression elimination
-        if optimizations.contains(&Optimization::CommonSubexpressionElimination) {
-            for method in program.methods.values_mut() {
-                cse::eliminate_common_subexpressions(method);
+            // Copy propagation
+            if optimizations.contains(&Optimization::CopyPropagation) {
+                for method in program.methods.values_mut() {
+                    copy_prop::propagate_copies(method);
+                }
             }
-        }
 
-        // Dead code elimination
-        if optimizations.contains(&Optimization::DeadCodeElimination) {
-            for method in program.methods.values_mut() {
-                dead_code::eliminate_dead_code(method);
+            // Common subexpression elimination
+            if optimizations.contains(&Optimization::CommonSubexpressionElimination) {
+                for method in program.methods.values_mut() {
+                    cse::eliminate_common_subexpressions(method);
+                }
+            }
+
+            // Dead code elimination
+            if optimizations.contains(&Optimization::DeadCodeElimination) {
+                for method in program.methods.values_mut() {
+                    dead_code::eliminate_dead_code(method);
+                }
             }
         }
     }
