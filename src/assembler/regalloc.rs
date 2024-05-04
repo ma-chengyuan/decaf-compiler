@@ -8,7 +8,7 @@ use crate::{
     opt::for_each_successor,
 };
 
-use super::LoweredMethod;
+use super::{LoweredMethod, NonMaterializedArgMapExt};
 
 pub struct RegAllocator<'a> {
     program: &'a Program,
@@ -77,24 +77,13 @@ impl<'a> RegAllocator<'a> {
         for inst_ref in method.block(block_ref).insts.clone().into_iter().rev() {
             match method.inst_mut(inst_ref) {
                 Inst::Phi(_) | Inst::PhiMem { .. } => break,
-                Inst::Call { args, .. } => {
-                    live.remove(&inst_ref);
-                    for arg in args {
-                        let from_mem = self
-                            .l
-                            .nm_args
-                            .get(&inst_ref)
-                            .map_or(false, |mem| mem.contains(arg));
-                        if !from_mem {
-                            live.insert(*arg);
-                        }
-                    }
-                    self.live_at
-                        .insert(ProgPt::BeforeInst(inst_ref), live.clone());
-                }
                 inst => {
                     live.remove(&inst_ref);
-                    inst.for_each_inst_ref(|inst_ref| live.insert(*inst_ref));
+                    inst.for_each_inst_ref(|arg_ref| {
+                        if self.l.nm_args.is_materialized(inst_ref, *arg_ref) {
+                            live.insert(*arg_ref);
+                        }
+                    });
                     self.live_at
                         .insert(ProgPt::BeforeInst(inst_ref), live.clone());
                 }

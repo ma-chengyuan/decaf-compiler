@@ -23,8 +23,9 @@ use crate::{
     },
 };
 
-use self::{regalloc::RegAllocator, spill::Spiller};
+use self::{imm_nm::ImmediateNonMaterializer, regalloc::RegAllocator, spill::Spiller};
 
+pub mod imm_nm;
 pub mod par_copy;
 pub mod regalloc;
 pub mod spill;
@@ -113,7 +114,7 @@ lazy_static! {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct PendingBoundsCheck {
-    reg: &'static str,
+    index: AsmArg,
     length: usize,
     line: usize,
 }
@@ -170,7 +171,9 @@ impl Assembler {
         }
 
         for method in self.program.methods.clone().values() {
+            // crate::utils::show_graphviz(&method.dump_graphviz());
             let mut lowered = LoweredMethod::new(method);
+            ImmediateNonMaterializer::new(&mut lowered).run();
             Spiller::new(&self.program, &mut lowered, REGS.len()).spill();
             RegAllocator::new(&self.program, &mut lowered).allocate();
             MethodAssembler::new(self, &lowered).assemble_method();
@@ -256,7 +259,7 @@ impl Assembler {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum AsmArg {
     Reg(&'static str),
     Imm(i64),
@@ -544,46 +547,63 @@ impl<'a> MethodAssembler<'a> {
                     Inst::Phi(_) | Inst::PhiMem { .. } => continue, // They are taken care of elsewhere!
                     Inst::Copy(src) => {
                         skip_non_side_effective!();
-                        self.emit_code(format!("movq {}, {}", self.reg(src), self.reg(inst_ref)));
+                        self.emit_code(format!(
+                            "movq {}, {}",
+                            self.arg(*inst_ref, *src),
+                            self.reg(inst_ref)
+                        ));
                     }
                     Inst::Add(lhs, rhs) | Inst::Sub(lhs, rhs) | Inst::Mul(lhs, rhs) => {
                         skip_non_side_effective!();
-                        let cmd = match inst {
-                            Inst::Add(_, _) => "add",
-                            Inst::Sub(_, _) => "sub",
-                            Inst::Mul(_, _) => "imul",
+                        let asm_inst = match inst {
+                            Inst::Add(_, _) => "addq",
+                            Inst::Sub(_, _) => "subq",
+                            Inst::Mul(_, _) => "imulq",
                             _ => unreachable!(),
                         };
-                        if self.l.reg[lhs] == self.l.reg[inst_ref] {
-                            self.emit_code(format!(
-                                "{}q {}, {}",
-                                cmd,
-                                self.reg(rhs),
-                                self.reg(inst_ref)
-                            ));
-                        } else if self.l.reg[rhs] == self.l.reg[inst_ref] {
-                            self.emit_code(format!(
-                                "{}q {}, {}",
-                                cmd,
-                                self.reg(lhs),
-                                self.reg(inst_ref)
-                            ));
-                            if let Inst::Sub(_, _) = inst {
-                                // Make up for the fact that we swapped the operands
-                                self.emit_code(format!("negq {}", self.reg(inst_ref)));
+                        let dst_reg = self.reg(inst_ref);
+                        match (self.arg(*inst_ref, *lhs), self.arg(*inst_ref, *rhs)) {
+                            (AsmArg::Imm(l), AsmArg::Imm(r)) => {
+                                // This really should have been handled by constant propagation.
+                                let v = match inst {
+                                    Inst::Add(_, _) => l + r,
+                                    Inst::Sub(_, _) => l - r,
+                                    Inst::Mul(_, _) => l * r,
+                                    _ => unreachable!(),
+                                };
+                                self.emit_code(format!("movq ${}, {}", v, dst_reg));
                             }
-                        } else {
-                            self.emit_code(format!(
-                                "movq {}, {}",
-                                self.reg(lhs),
-                                self.reg(inst_ref)
-                            ));
-                            self.emit_code(format!(
-                                "{}q {}, {}",
-                                cmd,
-                                self.reg(rhs),
-                                self.reg(inst_ref)
-                            ));
+                            (AsmArg::Imm(l), AsmArg::Reg(r)) => {
+                                // TODO: imul has special instructions for immediate operands
+                                if r != dst_reg {
+                                    self.emit_code(format!("movq {}, {}", r, dst_reg));
+                                }
+                                self.emit_code(format!("{} ${}, {}", asm_inst, l, dst_reg));
+                                if let Inst::Sub(_, _) = inst {
+                                    self.emit_code(format!("negq {}", dst_reg));
+                                }
+                            }
+                            (AsmArg::Reg(l), AsmArg::Imm(r)) => {
+                                // TODO: imul has special instructions for immediate operands
+                                if l != dst_reg {
+                                    self.emit_code(format!("movq {}, {}", l, dst_reg));
+                                }
+                                self.emit_code(format!("{} ${}, {}", asm_inst, r, dst_reg));
+                            }
+                            (AsmArg::Reg(l), AsmArg::Reg(r)) => {
+                                if l == dst_reg {
+                                    self.emit_code(format!("{} {}, {}", asm_inst, r, dst_reg));
+                                } else if r == dst_reg {
+                                    self.emit_code(format!("{} {}, {}", asm_inst, l, dst_reg));
+                                    if let Inst::Sub(_, _) = inst {
+                                        self.emit_code(format!("negq {}", dst_reg));
+                                    }
+                                } else {
+                                    self.emit_code(format!("movq {}, {}", l, dst_reg));
+                                    self.emit_code(format!("{} {}, {}", asm_inst, r, dst_reg));
+                                }
+                            }
+                            _ => unimplemented!(),
                         }
                     }
                     Inst::Div(lhs, rhs) | Inst::Mod(lhs, rhs) => {
@@ -676,57 +696,71 @@ impl<'a> MethodAssembler<'a> {
                         // Do bound check first
                         let (length, elem_size) =
                             match self.asm.program.infer_address_type(&self.l.method, addr) {
-                                Type::Array { length, base } => (*length, base.size()),
+                                Type::Array { length, base } => (*length, base.size() as i64),
                                 _ => unreachable!(),
                             };
-                        self.emit_bounds_check(*index, length);
-                        match addr {
-                            Address::Global(name) => {
+                        self.emit_bounds_check(*inst_ref, *index, length);
+                        let dst_reg = self.reg(inst_ref);
+                        match (addr, self.arg(*inst_ref, *index)) {
+                            (Address::Global(name), AsmArg::Reg(reg)) => {
                                 self.emit_code(format!(
                                     "movq {}(, {}, {}), {}",
-                                    name,
-                                    self.reg(index),
-                                    elem_size,
-                                    self.reg(inst_ref)
+                                    name, reg, elem_size, dst_reg
                                 ));
                             }
-                            Address::Local(stack_slot) => {
+                            (Address::Global(name), AsmArg::Imm(i)) => {
+                                let sym_name = format!("{}.{}", name, i);
+                                let offset = i * elem_size;
+                                self.emit_code(format!(".set {}, {} + {}", sym_name, name, offset));
+                                // (,1) is a syntactic exception in AT&T syntax
+                                self.emit_code(format!("movq {}(,1), {}", sym_name, dst_reg));
+                            }
+                            (Address::Local(stack_slot), AsmArg::Reg(reg)) => {
+                                let offset = self.stack_slot_to_offset[stack_slot];
                                 self.emit_code(format!(
                                     "movq {}(%rbp, {}, {}), {}",
-                                    self.stack_slot_to_offset[stack_slot],
-                                    self.reg(index),
-                                    elem_size,
-                                    self.reg(inst_ref)
+                                    offset, reg, elem_size, dst_reg
                                 ));
                             }
+                            (Address::Local(stack_slot), AsmArg::Imm(i)) => {
+                                let offset = self.stack_slot_to_offset[stack_slot] + i * elem_size;
+                                self.emit_code(format!("movq {}(%rbp), {}", offset, dst_reg));
+                            }
+                            _ => unreachable!(),
                         }
                     }
                     Inst::StoreArray { addr, index, value } => {
                         let (length, elem_size) =
                             match self.asm.program.infer_address_type(&self.l.method, addr) {
-                                Type::Array { length, base } => (*length, base.size()),
+                                Type::Array { length, base } => (*length, base.size() as i64),
                                 _ => unreachable!(),
                             };
-                        self.emit_bounds_check(*index, length);
-                        match addr {
-                            Address::Global(name) => {
+                        self.emit_bounds_check(*inst_ref, *index, length);
+                        let value = self.arg(*inst_ref, *value);
+                        match (addr, self.arg(*inst_ref, *index)) {
+                            (Address::Global(name), AsmArg::Reg(reg)) => {
                                 self.emit_code(format!(
                                     "movq {}, {}(, {}, {})",
-                                    self.reg(value),
-                                    name,
-                                    self.reg(index),
-                                    elem_size
+                                    value, name, reg, elem_size
                                 ));
                             }
-                            Address::Local(stack_slot) => {
+                            (Address::Global(name), AsmArg::Imm(i)) => {
+                                let sym_name = format!("{}.{}", name, i);
+                                let offset = i * elem_size;
+                                self.emit_code(format!(".set {}, {} + {}", sym_name, name, offset));
+                                self.emit_code(format!("movq {}, {}(,1)", value, sym_name));
+                            }
+                            (Address::Local(stack_slot), AsmArg::Reg(reg)) => {
                                 self.emit_code(format!(
                                     "movq {}, {}(%rbp, {}, {})",
-                                    self.reg(value),
-                                    self.stack_slot_to_offset[stack_slot],
-                                    self.reg(index),
-                                    elem_size
+                                    value, self.stack_slot_to_offset[stack_slot], reg, elem_size
                                 ));
                             }
+                            (Address::Local(stack_slot), AsmArg::Imm(i)) => {
+                                let offset = self.stack_slot_to_offset[stack_slot] + i * elem_size;
+                                self.emit_code(format!("movq {}, {}(%rbp)", value, offset));
+                            }
+                            _ => unreachable!(),
                         }
                     }
                     Inst::Initialize { stack_slot, value } => {
@@ -821,7 +855,7 @@ impl<'a> MethodAssembler<'a> {
             stack_space_for_args += 8;
         }
         for arg_ref in args.iter().skip(6).rev() {
-            match self.get_arg(inst_ref, *arg_ref) {
+            match self.arg(inst_ref, *arg_ref) {
                 arg @ (AsmArg::Reg(_) | AsmArg::Stack(_)) => {
                     self.emit_code(format!("pushq {}", arg));
                 }
@@ -842,7 +876,7 @@ impl<'a> MethodAssembler<'a> {
         let mut par_copies = HashSet::new();
         let mut ser_copies = vec![];
         for (arg_idx, arg_ref) in args.iter().enumerate().take(6) {
-            let arg = self.get_arg(inst_ref, *arg_ref);
+            let arg = self.arg(inst_ref, *arg_ref);
             let dst_reg = ARG_REGS[arg_idx];
             match arg {
                 AsmArg::Reg(arg_reg) if ARG_REGS.contains(&arg_reg) => {
@@ -879,7 +913,7 @@ impl<'a> MethodAssembler<'a> {
         }
     }
 
-    fn get_arg(&self, inst_ref: InstRef, arg_ref: InstRef) -> AsmArg {
+    fn arg(&self, inst_ref: InstRef, arg_ref: InstRef) -> AsmArg {
         if self.l.nm_args.is_materialized(inst_ref, arg_ref) {
             AsmArg::Reg(self.reg(arg_ref))
         } else {
@@ -902,19 +936,18 @@ impl<'a> MethodAssembler<'a> {
         }
     }
 
-    fn get_bound_check_fail_label(&self, reg: &'static str, length: usize, line: usize) -> String {
+    fn get_bound_check_fail_label(&self, index: &AsmArg, length: usize, line: usize) -> String {
         format!(
             "{}.bound_check_fail.{}.{}.{}",
             &self.name,
-            &reg[1..], // Remove the % sign
+            &index.to_string()[1..], // Remove the % or $ sign
             length,
             line
         )
     }
 
     /// Checks if %rax is in [0, length) and panics if not
-    fn emit_bounds_check(&mut self, val: InstRef, length: usize) {
-        let reg = self.regs[self.l.reg[&val]];
+    fn emit_bounds_check(&mut self, inst_ref: InstRef, val: InstRef, length: usize) {
         let line = self
             .l
             .method
@@ -922,21 +955,43 @@ impl<'a> MethodAssembler<'a> {
             .and_then(|a| a.spans().first().cloned())
             .map(|s| s.start().line)
             .unwrap_or(0); // TODO: better error handling
-        let fail_branch = self.get_bound_check_fail_label(reg, length, line);
-        self.pending_bounds_check
-            .insert(PendingBoundsCheck { reg, length, line });
-        self.emit_code(format!("cmpq ${}, {}", length - 1, reg));
-        self.emit_code(format!("ja {}", fail_branch)); // Unsigned comparison
+        let index = self.arg(inst_ref, val);
+        let fail_branch = self.get_bound_check_fail_label(&index, length, line);
+        match index {
+            AsmArg::Reg(reg) => {
+                self.emit_code(format!("cmpq ${}, {}", length - 1, reg));
+                self.emit_code(format!("ja {}", fail_branch)); // Unsigned comparison
+                self.pending_bounds_check.insert(PendingBoundsCheck {
+                    index,
+                    length,
+                    line,
+                });
+            }
+            AsmArg::Imm(i) => {
+                if i < 0 || i >= length as i64 {
+                    self.emit_code(format!("jmp {}", fail_branch));
+                    self.pending_bounds_check.insert(PendingBoundsCheck {
+                        index,
+                        length,
+                        line,
+                    });
+                }
+            }
+            _ => unreachable!(),
+        }
     }
 
     fn flush_bounds_check(&mut self) {
-        for PendingBoundsCheck { reg, length, line } in
-            std::mem::take(&mut self.pending_bounds_check)
+        for PendingBoundsCheck {
+            index,
+            length,
+            line,
+        } in std::mem::take(&mut self.pending_bounds_check)
         {
             // first argument is the format string, second is the line number, third is arr.len, fourth is the index
-            let fail_branch = self.get_bound_check_fail_label(reg, length, line);
+            let fail_branch = self.get_bound_check_fail_label(&index, length, line);
             self.emit_label(&fail_branch);
-            self.emit_code(format!("movq {}, %rcx", reg));
+            self.emit_code(format!("movq {}, %rcx", index));
             self.emit_code(format!("movq ${}, %rsi", line));
             self.emit_code(format!("movq ${}, %rdx", length));
             self.emit_code("jmp bounds_check.fail");
@@ -958,6 +1013,7 @@ impl<'a> MethodAssembler<'a> {
             }
             Const::Repeat(val, n) => match &**val {
                 Const::Int(0) | Const::Bool(false) => {
+                    // TODO: use rep stosq
                     // Use memset to zero out the memory
                     for reg in CALLER_SAVE_REGS.iter() {
                         self.emit_code(format!("pushq {}", reg));
