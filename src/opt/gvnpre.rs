@@ -1,10 +1,12 @@
-
 pub mod gvnpre {
-    use std::collections::{HashMap, HashSet, LinkedList};
     use crate::{
-        inter::{constant::Const, ir::{BlockRef, Inst, InstRef, Method}},
+        inter::{
+            constant::Const,
+            ir::{BlockRef, Inst, InstRef, Method},
+        },
         opt::dom::compute_dominance,
     };
+    use std::collections::{HashMap, HashSet, LinkedList};
 
     #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
     pub struct Value(pub usize);
@@ -21,18 +23,24 @@ pub mod gvnpre {
         LoadConst(Const),
 
         Reg(InstRef),
-        Phi(HashMap<BlockRef, Value>),
+        Phi(HashMap<BlockRef, InstRef>),
     }
 
     impl Expression {
         fn new_add(lhs: Value, rhs: Value) -> Self {
-            Expression::Add(std::cmp::min(lhs.clone(), rhs.clone()), std::cmp::max(lhs.clone(), rhs.clone()))
+            Expression::Add(
+                std::cmp::min(lhs.clone(), rhs.clone()),
+                std::cmp::max(lhs.clone(), rhs.clone()),
+            )
         }
         fn new_sub(lhs: Value, rhs: Value) -> Self {
             Expression::Sub(lhs, rhs)
         }
         fn new_mult(lhs: Value, rhs: Value) -> Self {
-            Expression::Mult(std::cmp::min(lhs.clone(), rhs.clone()), std::cmp::max(lhs.clone(), rhs.clone()))
+            Expression::Mult(
+                std::cmp::min(lhs.clone(), rhs.clone()),
+                std::cmp::max(lhs.clone(), rhs.clone()),
+            )
         }
         fn new_div(lhs: Value, rhs: Value) -> Self {
             Expression::Div(lhs, rhs)
@@ -53,7 +61,7 @@ pub mod gvnpre {
         fn new_reg(value: InstRef) -> Self {
             Expression::Reg(value)
         }
-        fn new_phi(value: HashMap<BlockRef, Value>) -> Self {
+        fn new_phi(value: HashMap<BlockRef, InstRef>) -> Self {
             Expression::Phi(value)
         }
     }
@@ -93,27 +101,34 @@ pub mod gvnpre {
             self.map.get(&inst).unwrap().clone()
         }
 
-        pub fn maybe_insert_inst(&mut self, inst: InstRef, inst_value: &Inst) -> (Value, bool) {
-            if self.map.contains_key(&inst) {
-                (self.map.get(&inst).unwrap().clone(), false)
-            } else {
-                let expr = match inst_value {
-                    Inst::Add(lhs, rhs) => Expression::new_add(self.lookup(*lhs), self.lookup(*rhs)),
-                    Inst::Sub(lhs, rhs) => Expression::new_sub(self.lookup(*lhs), self.lookup(*rhs)),
-                    Inst::Mul(lhs, rhs) => Expression::new_mult(self.lookup(*lhs), self.lookup(*rhs)),
-                    Inst::Div(lhs, rhs) => Expression::new_div(self.lookup(*lhs), self.lookup(*rhs)),
-                    Inst::Neg(operand) => Expression::new_neg(self.lookup(*operand)),
-                    Inst::Not(operand) => Expression::new_not(self.lookup(*operand)),
-                    Inst::Copy(src) => Expression::new_copy(self.lookup(*src)),
-                    Inst::LoadConst(value) => Expression::new_load_const(value.clone()),
-                    Inst::Phi(values) => {
-                        let phi = Expression::new_phi(values.iter().map(|(block, value)| (block.clone(), self.lookup(*value))).collect());
-                        phi
-                    }
-                    _ => Expression::new_reg(inst), // Not considered in optimization
-                };
-                self.insert(inst, expr)
-            }
+        pub fn maybe_insert_inst(
+            &mut self,
+            inst: InstRef,
+            inst_value: &Inst,
+        ) -> (Value, Expression, bool) {
+            println!("Inserting instruction: {:?}", inst_value);
+            let mut okay = true;
+            let expr = match inst_value {
+                Inst::Add(lhs, rhs) => Expression::new_add(self.lookup(*lhs), self.lookup(*rhs)),
+                Inst::Sub(lhs, rhs) => Expression::new_sub(self.lookup(*lhs), self.lookup(*rhs)),
+                Inst::Mul(lhs, rhs) => Expression::new_mult(self.lookup(*lhs), self.lookup(*rhs)),
+                Inst::Div(lhs, rhs) => Expression::new_div(self.lookup(*lhs), self.lookup(*rhs)),
+                Inst::Neg(operand) => Expression::new_neg(self.lookup(*operand)),
+                Inst::Not(operand) => Expression::new_not(self.lookup(*operand)),
+                Inst::Copy(src) => Expression::new_copy(self.lookup(*src)),
+                Inst::LoadConst(value) => Expression::new_load_const(value.clone()),
+                Inst::Phi(values) => {
+                    let phi = Expression::new_phi(values.clone());
+                    phi
+                }
+                _ => {
+                    // not considered in optimization
+                    okay = false;
+                    Expression::new_reg(inst)
+                }
+            };
+            let (value, _) = self.insert(inst, expr.clone());
+            (value, expr, okay)
         }
 
         pub fn get_value(&self, inst: InstRef) -> Option<&Value> {
@@ -128,49 +143,59 @@ pub mod gvnpre {
     type AntileaderSet = Vec<HashMap<Value, Expression>>;
     type PhiGen = Vec<HashMap<Value, InstRef>>;
 
-    pub fn build_sets_phase1(method: &mut Method,
-    current_block: BlockRef,
-    dom_tree: &[Vec<BlockRef>],
-    exp_gen: &mut Vec<LinkedList<(Value, Expression)>>,
-    phi_gen: &mut Vec<HashMap<Value, InstRef>>,
-    tmp_gen: &mut Vec<HashSet<InstRef>>,
-    leaders: &mut Vec<HashMap<Value, InstRef>>,
-    value_table: &mut ValueTable,
+    pub fn build_sets_phase1(
+        method: &mut Method,
+        current_block: BlockRef,
+        dom_tree: &[Vec<BlockRef>],
+        exp_gen: &mut Vec<LinkedList<(Value, Expression)>>,
+        phi_gen: &mut Vec<HashMap<Value, InstRef>>,
+        tmp_gen: &mut Vec<HashSet<InstRef>>,
+        leaders: &mut Vec<HashMap<Value, InstRef>>,
+        value_table: &mut ValueTable,
     ) {
         // Do logic stuff
+        let mut added_vals = HashSet::new();
         for inst in method.block(current_block).insts.clone() {
-            match value_table.maybe_insert_inst(inst, method.inst(inst)) {
-                (value, true) => {
-                    // Add to leaders
-                    let expr = value_table.get_expr(value.clone()).unwrap();
+            let (value, expr, okay) = value_table.maybe_insert_inst(inst, method.inst(inst));
+            if okay {
+                leaders[current_block.0].insert(value.clone(), inst);
 
-                    leaders[current_block.0].insert(value.clone(), inst);
-                    exp_gen[current_block.0].push_back((value.clone(), expr.clone()));
-
-                    if let Expression::Phi(_) = expr {
-                        phi_gen[current_block.0].insert(value, inst);
-                    } else {
-                        tmp_gen[current_block.0].insert(inst);
-                    }
+                if let Expression::Phi(_) = expr {
+                    phi_gen[current_block.0].insert(value.clone(), inst);
                 }
-                _ => {}
+
+                if added_vals.insert(value.clone()) {
+                    exp_gen[current_block.0].push_back((value.clone(), expr.clone()));
+                }
+            } else {
+                tmp_gen[current_block.0].insert(inst);
             }
         }
         // Recurse
         for child in dom_tree[current_block.0].iter() {
             leaders[child.0] = leaders[current_block.0].clone();
-            build_sets_phase1(method, *child, dom_tree, exp_gen, phi_gen, tmp_gen, leaders, value_table);
+            build_sets_phase1(
+                method,
+                *child,
+                dom_tree,
+                exp_gen,
+                phi_gen,
+                tmp_gen,
+                leaders,
+                value_table,
+            );
         }
     }
 
     fn build_sets(method: &mut Method) -> (LeaderSet, AntileaderSet, PhiGen, ValueTable) {
         let dom = compute_dominance(method);
         let dom_tree = dom.dominator_tree();
-        
+
         let mut value_table = ValueTable::new();
         let num_blocks = method.n_blocks();
 
-        let mut exp_gen: Vec<LinkedList<(Value, Expression)>> = vec![LinkedList::default(); num_blocks];
+        let mut exp_gen: Vec<LinkedList<(Value, Expression)>> =
+            vec![LinkedList::default(); num_blocks];
         let mut tmp_gen: Vec<HashSet<InstRef>> = vec![HashSet::default(); num_blocks];
         let mut phi_gen: Vec<HashMap<Value, InstRef>> = vec![HashMap::default(); num_blocks];
         let mut leaders: LeaderSet = vec![HashMap::default(); num_blocks];
@@ -219,4 +244,3 @@ pub mod gvnpre {
         let (leaders, antic_in, phi_gen, value_table) = build_sets(method);
     }
 }
-

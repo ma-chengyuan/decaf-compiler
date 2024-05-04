@@ -172,19 +172,19 @@ pub fn optimize(mut program: Program, optimizations: &[Optimization]) -> Program
                 constant_folding::fold_constants(method);
             }
 
-            // Copy propagation
-            if optimizations.contains(&Optimization::CopyPropagation) {
-                for method in program.methods.values_mut() {
-                    copy_prop::propagate_copies(method);
-                }
+        // Copy propagation
+        if optimizations.contains(&Optimization::CopyPropagation) {
+            for method in program.methods.values_mut() {
+                copy_prop::propagate_copies(method);
             }
+        }
 
-            // Common subexpression elimination
-            if optimizations.contains(&Optimization::CommonSubexpressionElimination) {
-                for method in program.methods.values_mut() {
-                    cse::eliminate_common_subexpressions(method);
-                }
+        // Common subexpression elimination
+        if optimizations.contains(&Optimization::CommonSubexpressionElimination) {
+            for method in program.methods.values_mut() {
+                cse::eliminate_common_subexpressions(method);
             }
+        }
 
             // Dead code elimination
             if optimizations.contains(&Optimization::DeadCodeElimination) {
@@ -219,6 +219,7 @@ pub fn optimize(mut program: Program, optimizations: &[Optimization]) -> Program
                 }
         }
     }
+
 
     // let mut ls = vec![];
     // for (name, method) in program.methods.iter() {
