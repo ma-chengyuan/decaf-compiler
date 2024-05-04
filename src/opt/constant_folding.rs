@@ -80,7 +80,7 @@ pub fn fold_constants(method: &mut Method) {
                     {
                         const_result = Some(Const::Bool(match method.inst(inst) {
                             Inst::Eq(..) => a == b,
-                            Inst::Neq(..) => a == b,
+                            Inst::Neq(..) => a != b,
                             _ => unreachable!(),
                         }))
                     }
