@@ -5,14 +5,12 @@ use std::{
 };
 
 use crate::{
+    assembler::NonMaterializedArgMapExt,
     inter::{
-        ir::{Address, BlockRef, Inst, InstRef, Method, ProgPt, Program, StackSlotRef, Terminator},
+        ir::{Address, BlockRef, Inst, InstRef, Method, ProgPt, Program, Terminator},
         types::Type,
     },
-    opt::{
-        dom::{compute_dominance, Dominance},
-        predecessors, reverse_postorder, split_critical_edges,
-    },
+    opt::{dom::Dominance, predecessors, reverse_postorder},
     utils::{
         formatting::{Table, TableRow},
         make_internal_ident,
@@ -33,18 +31,10 @@ enum ReloadSpill {
 
 pub struct Spiller<'a> {
     program: &'a Program,
-    method: Method,
-    // Precomputed data that many parts of the algorithm need.
-    dom: Dominance,
-    dom_tree: Vec<Vec<BlockRef>>,
-    predecessors: Vec<HashSet<BlockRef>>,
-    rev_postorder: Vec<BlockRef>,
+    l: &'a mut LoweredMethod,
     /// Maps an instruction to the block it belongs to and its index in the
     /// block.
     inst_to_block_pos: Vec<(BlockRef, usize)>,
-
-    /// Max number of registers available.
-    max_reg: usize,
 
     /// The spill heuristic map for each program point.
     /// Following Hack's paper, at each program point, the spill weight of a
@@ -78,50 +68,41 @@ pub struct Spiller<'a> {
     /// in some register. The latter is a pure memory-to-memory operation. We
     /// require that operands of a phi-spill are also spilled.
     phi_spills: HashSet<InstRef>,
-    /// Mapping from spilled variables to their spill slots.
-    spill_slots: HashMap<InstRef, StackSlotRef>,
-    /// Some instructions do not need all of their variables in registers.
-    mem_args: HashMap<InstRef, HashSet<InstRef>>,
 }
 
 impl<'a> Spiller<'a> {
-    pub fn new(program: &'a Program, method: &Method, max_reg: usize) -> Self {
-        let method = split_critical_edges(method);
-        let dom = compute_dominance(&method);
-        let dom_tree = dom.dominator_tree();
-        let mut inst_to_block_pos = vec![(BlockRef(0), 0); method.n_insts()];
-        for block_ref in method.iter_block_refs() {
-            for (i, inst_ref) in method.block(block_ref).insts.iter().enumerate() {
+    pub fn new(program: &'a Program, l: &'a mut LoweredMethod, max_reg: usize) -> Self {
+        // let method = split_critical_edges(method);
+        // let dom = compute_dominance(&method);
+        // let dom_tree = dom.dominator_tree();
+        let mut inst_to_block_pos = vec![(BlockRef(0), 0); l.method.n_insts()];
+        for block_ref in l.method.iter_block_refs() {
+            for (i, inst_ref) in l.method.block(block_ref).insts.iter().enumerate() {
                 inst_to_block_pos[inst_ref.0] = (block_ref, i);
             }
         }
+        l.max_reg = max_reg;
         Spiller {
             program,
-            dom,
-            dom_tree,
-            predecessors: predecessors(&method),
-            rev_postorder: reverse_postorder(&method),
             spill_heuristic: HashMap::new(),
-            reg_in: vec![HashSet::new(); method.n_blocks()],
-            reg_out: vec![HashSet::new(); method.n_blocks()],
-            spill_in: vec![HashSet::new(); method.n_blocks()],
-            spill_out: vec![HashSet::new(); method.n_blocks()],
+            reg_in: vec![HashSet::new(); l.method.n_blocks()],
+            reg_out: vec![HashSet::new(); l.method.n_blocks()],
+            spill_in: vec![HashSet::new(); l.method.n_blocks()],
+            spill_out: vec![HashSet::new(); l.method.n_blocks()],
             spill_reloads: HashMap::new(),
-            spill_slots: HashMap::new(),
             spill_sites: HashMap::new(),
             phi_spills: HashSet::new(),
-            mem_args: HashMap::new(),
             inst_to_block_pos,
-            max_reg,
-            method,
+            l,
         }
     }
 
     fn sanity_check_rev_postorder(&self) {
-        let mut visited = vec![false; self.method.n_blocks()];
-        for block in self.rev_postorder.iter() {
-            for pred in self.predecessors[block.0].iter() {
-                if self.dom.dominates(*block, *pred) {
+        let rev_postorder = reverse_postorder(&self.l.method);
+        let mut visited = vec![false; self.l.method.n_blocks()];
+        for block in rev_postorder.iter() {
+            for pred in self.l.predecessors[block.0].iter() {
+                if self.l.dom.dominates(*block, *pred) {
                     assert!(!visited[pred.0]);
                 } else {
                     assert!(visited[pred.0]);
@@ -131,7 +112,7 @@ impl<'a> Spiller<'a> {
         }
     }
 
-    pub fn spill(mut self) -> LoweredMethod {
+    pub fn spill(mut self) {
         self.eval_spill_heuristic();
         // Go over blocks in reverse postorder.
         // For normal blocks that aren't loop headers, this order ensures that
@@ -144,7 +125,7 @@ impl<'a> Spiller<'a> {
         }
 
         // .clone() to appease the borrow checker.
-        let rev_postorder = self.rev_postorder.clone();
+        let rev_postorder = reverse_postorder(&self.l.method);
         for block in &rev_postorder {
             self.add_intrablock_spills(*block);
         }
@@ -155,33 +136,22 @@ impl<'a> Spiller<'a> {
         // crate::utils::show_graphviz(&self.dump_graphviz());
         let method = self.reconstruct_ssa();
         // crate::utils::show_graphviz(&method.dump_graphviz());
-        LoweredMethod {
-            method,
-            max_reg: self.max_reg,
-            dom: self.dom,
-            dom_tree: self.dom_tree,
-            predecessors: self.predecessors,
-            spill_slots: self.spill_slots,
-            mem_args: self.mem_args,
-
-            live_at: Default::default(),
-            reg: Default::default(),
-        }
+        self.l.method = method;
     }
 
     /// Returns the set of blocks that are in the loop containing block_ref.
     /// Or None if block_ref is not a loop header.
     fn get_loop(&self, block_ref: BlockRef) -> Option<HashSet<BlockRef>> {
         let mut body: Option<HashSet<BlockRef>> = None;
-        for pred in self.predecessors[block_ref.0].iter() {
-            if self.dom.dominates(block_ref, *pred) {
+        for pred in self.l.predecessors[block_ref.0].iter() {
+            if self.l.dom.dominates(block_ref, *pred) {
                 let mut this_body = HashSet::new();
                 this_body.insert(block_ref);
                 let mut stack = Vec::new();
                 stack.push(*pred);
                 while let Some(block) = stack.pop() {
                     if !this_body.insert(block) {
-                        stack.extend(self.predecessors[block.0].iter().cloned());
+                        stack.extend(self.l.predecessors[block.0].iter().cloned());
                     }
                 }
                 body = Some(match body {
@@ -214,8 +184,8 @@ impl<'a> Spiller<'a> {
             max_pressure = max_pressure.max(self.spill_heuristic[prog_pt].len());
         };
         for block in loop_body {
-            for inst_ref in self.method.block(*block).insts.clone() {
-                match self.method.inst_mut(inst_ref) {
+            for inst_ref in self.l.method.block(*block).insts.clone() {
+                match self.l.method.inst_mut(inst_ref) {
                     Inst::Phi(map) => {
                         for (src, var) in map {
                             if loop_body.contains(src) {
@@ -230,7 +200,8 @@ impl<'a> Spiller<'a> {
                 }
             }
             update_max_pressure(&ProgPt::BeforeTerm(*block));
-            self.method
+            self.l
+                .method
                 .block_mut(*block)
                 .term
                 .for_each_inst_ref(&mut update_used);
@@ -263,7 +234,7 @@ impl<'a> Spiller<'a> {
         loop_usage: &HashSet<InstRef>,
         availability: Option<bool>,
     ) -> Option<bool> {
-        let h = &self.spill_heuristic[&self.method.first_prog_pt(block_ref)];
+        let h = &self.spill_heuristic[&self.l.method.first_prog_pt(block_ref)];
         if !h.is_live(&var) {
             // If a variable is supposedly "live", but actually not, it must be a phi.
             // A dead phi is not worth taking.
@@ -292,8 +263,8 @@ impl<'a> Spiller<'a> {
         block_phis: &HashSet<InstRef>,
     ) -> bool {
         let mut ret = true;
-        for pred in self.predecessors[block_ref.0].iter() {
-            let var = match self.method.inst(var) {
+        for pred in self.l.predecessors[block_ref.0].iter() {
+            let var = match self.l.method.inst(var) {
                 Inst::Phi(map) if block_phis.contains(&var) => map[&pred],
                 _ => var,
             };
@@ -307,7 +278,7 @@ impl<'a> Spiller<'a> {
 
     /// Checks if an instruction is (cheaply) rematerializable.
     fn is_rematerializable(&self, inst_ref: InstRef) -> bool {
-        match self.method.inst(inst_ref) {
+        match self.l.method.inst(inst_ref) {
             Inst::LoadConst(_) => true,
             // More cases can be added here.
             _ => false,
@@ -315,7 +286,7 @@ impl<'a> Spiller<'a> {
     }
 
     fn rematerialize(&self, inst_ref: InstRef) -> Inst {
-        match self.method.inst(inst_ref) {
+        match self.l.method.inst(inst_ref) {
             Inst::LoadConst(c) => Inst::LoadConst(c.clone()),
             // More cases can be added here.
             _ => unreachable!(),
@@ -341,21 +312,21 @@ impl<'a> Spiller<'a> {
     /// point after phi). spill_in is a subset of reg_in, containing variables
     /// that have been spilled.
     fn init_reg_in(&mut self, block_ref: BlockRef) -> (HashSet<InstRef>, HashSet<InstRef>) {
-        if self.predecessors[block_ref.0].is_empty() {
+        if self.l.predecessors[block_ref.0].is_empty() {
             // Initial block
             return (HashSet::new(), HashSet::new());
-        } else if self.predecessors[block_ref.0].len() == 1 {
-            let pred = self.predecessors[block_ref.0].iter().next().unwrap();
+        } else if self.l.predecessors[block_ref.0].len() == 1 {
+            let pred = self.l.predecessors[block_ref.0].iter().next().unwrap();
             return (self.reg_out[pred.0].clone(), self.spill_out[pred.0].clone());
         }
 
-        let first_pt = self.method.first_prog_pt(block_ref);
+        let first_pt = self.l.method.first_prog_pt(block_ref);
         let loop_body = self.get_loop(block_ref);
         // The set of variables we very much want to take into registers.
         let mut starter: Vec<InstRef> = vec![];
         // Uh..., not so sure, but good to have.
         let mut delayed: Vec<InstRef> = vec![];
-        let phis = self.method.phis(block_ref);
+        let phis = self.l.method.phis(block_ref);
 
         // If a loop, gets used variables in the loop and the maximum register
         // pressure.
@@ -385,16 +356,17 @@ impl<'a> Spiller<'a> {
         }
 
         // Do we have more registers slots that can be used beyond starter?
-        let n_free_slots = self.max_reg.saturating_sub(starter.len());
+        let n_free_slots = self.l.max_reg.saturating_sub(starter.len());
         // Recall self.should_take_variable, a variable is in delayed if and
         // only if block_ref is a loop header, the variable is live in the loop,
         // but not used in the loop. That is, the variable lives through the
         // loop. These variables should have been counted as part of the max
         // register pressure of the loop. Hence, max_pressure - delayed.len() is
         // the register pressure caused by variables actually used in the loop.
-        // self.max_reg - (max_pressure - delayed.len()) is the number of free
+        // self.l.max_reg - (max_pressure - delayed.len()) is the number of free
         // slots if we keep all variables used in the loop in registers.
         let n_free_pressure_slots = self
+            .l
             .max_reg
             .saturating_sub(max_pressure.saturating_sub(delayed.len()));
         let mut n_free_slots = n_free_slots.min(n_free_pressure_slots);
@@ -406,13 +378,13 @@ impl<'a> Spiller<'a> {
                 }
                 let mut take = true;
                 // Decide if we should take the variable.
-                match self.method.inst(*var) {
+                match self.l.method.inst(*var) {
                     Inst::Phi(_) => {
                         // Phi nodes incur some extra movements anyway so we care less
                     }
                     _ => {
-                        for pred in self.predecessors[block_ref.0].iter() {
-                            if self.dom.dominates(block_ref, *pred) {
+                        for pred in self.l.predecessors[block_ref.0].iter() {
+                            if self.l.dom.dominates(block_ref, *pred) {
                                 // Loop backedge, we haven't visited pred yet.
                             }
                             if !self.reg_out[pred.0].contains(var) {
@@ -433,7 +405,7 @@ impl<'a> Spiller<'a> {
         starter.sort_by_key(|var| (h.get(var), var.0));
         let reg_in = starter
             .into_iter()
-            .take(self.max_reg)
+            .take(self.l.max_reg)
             .collect::<HashSet<_>>();
         let mut spill_in: HashSet<InstRef> = HashSet::new();
         for phi_var in &phis {
@@ -446,8 +418,8 @@ impl<'a> Spiller<'a> {
                 // Don't consider phi as spilled.
                 continue;
             }
-            for pred in self.predecessors[block_ref.0].iter() {
-                if self.dom.dominates(block_ref, *pred) {
+            for pred in self.l.predecessors[block_ref.0].iter() {
+                if self.l.dom.dominates(block_ref, *pred) {
                     continue; // Loop backedge, we haven't visited pred yet.
                 }
                 // If the value has been spilled in a predecessor, consider it
@@ -466,10 +438,10 @@ impl<'a> Spiller<'a> {
         let get_block_pos = |pt: &ProgPt| match pt {
             ProgPt::BeforeInst(inst_ref) => self.inst_to_block_pos[inst_ref.0],
             ProgPt::BeforeTerm(block_ref) => {
-                (*block_ref, self.method.block(*block_ref).insts.len())
+                (*block_ref, self.l.method.block(*block_ref).insts.len())
             }
             ProgPt::AfterTerm(block_ref) => {
-                (*block_ref, self.method.block(*block_ref).insts.len() + 1)
+                (*block_ref, self.l.method.block(*block_ref).insts.len() + 1)
             }
         };
         let (block_a, pos_a) = get_block_pos(a);
@@ -477,7 +449,7 @@ impl<'a> Spiller<'a> {
         if block_a == block_b {
             pos_a <= pos_b
         } else {
-            self.dom.dominates(block_a, block_b)
+            self.l.dom.dominates(block_a, block_b)
         }
     }
 
@@ -525,7 +497,7 @@ impl<'a> Spiller<'a> {
 
     fn add_phi_pre_spills(&mut self) {
         for phi_var in self.phi_spills.clone() {
-            let Inst::Phi(map) = self.method.inst(phi_var) else {
+            let Inst::Phi(map) = self.l.method.inst(phi_var) else {
                 unreachable!();
             };
             for (pred, var) in map.clone() {
@@ -538,12 +510,12 @@ impl<'a> Spiller<'a> {
     }
 
     fn fix_interblock_coupling(&mut self, block_ref: BlockRef) {
-        let first_pt = self.method.first_prog_pt(block_ref);
-        let phis = self.method.phis(block_ref);
+        let first_pt = self.l.method.first_prog_pt(block_ref);
+        let phis = self.l.method.phis(block_ref);
         let reg_in = self.reg_in[block_ref.0].clone();
         let spill_in = self.spill_in[block_ref.0].clone();
         let h = self.spill_heuristic[&first_pt].clone();
-        for pred in self.predecessors[block_ref.0].clone() {
+        for pred in self.l.predecessors[block_ref.0].clone() {
             let reg_out = self.reg_out[pred.0].clone();
             let spill_out = self.spill_out[pred.0].clone();
             // let h = self.spill_heuristic[&ProgPt::BeforeTerm(pred)].clone();
@@ -557,7 +529,7 @@ impl<'a> Spiller<'a> {
                 }
             }
             for var in reg_in.iter() {
-                let var = match self.method.inst(*var) {
+                let var = match self.l.method.inst(*var) {
                     Inst::Phi(map) if phis.contains(var) => map[&pred],
                     _ => *var,
                 };
@@ -567,13 +539,13 @@ impl<'a> Spiller<'a> {
                 }
             }
             for var in reg_in.iter() {
-                let var = match self.method.inst(*var) {
+                let var = match self.l.method.inst(*var) {
                     Inst::Phi(map) if phis.contains(var) => map[&pred],
                     _ => *var,
                 };
                 if !reg_out.contains(&var) {
                     // Insert reload on the edge.
-                    if self.predecessors[block_ref.0].len() > 1 {
+                    if self.l.predecessors[block_ref.0].len() > 1 {
                         self.add_reload(&ProgPt::BeforeTerm(pred), var);
                     } else {
                         self.add_reload(&first_pt, var);
@@ -613,20 +585,26 @@ impl<'a> Spiller<'a> {
             *live = live_vec.into_iter().take(count).collect();
         }
 
-        let insts = self.method.block(block_ref).insts.clone();
+        let insts = self.l.method.block(block_ref).insts.clone();
         for i in 0..(insts.len() + 1) {
             // insts.len() + 1 because terminator counts as an "instruction"
             // The arguments of the instruction at i.
             let mut args = HashSet::new();
-            let mut insert_args = |inst_ref: &mut InstRef| args.insert(*inst_ref);
+            // let mut insert_args = |inst_ref: &mut InstRef| args.insert(*inst_ref);
             // Get the program point before the instruction at i and the result value, if any.
             let (prog_pt, result_value) = if i < insts.len() {
                 let inst_ref = insts[i];
-                match self.method.inst_mut(inst_ref) {
+                match self.l.method.inst_mut(inst_ref) {
                     Inst::Phi(_) => continue, // Skip phi instructions as they have been taken care of.
-                    inst => inst.for_each_inst_ref(&mut insert_args),
+                    inst => {
+                        inst.for_each_inst_ref(|arg_ref| {
+                            if self.l.nm_args.is_materialized(inst_ref, *arg_ref) {
+                                args.insert(*arg_ref);
+                            }
+                        });
+                    }
                 };
-                let result_value = match self.program.infer_inst_type(&self.method, inst_ref) {
+                let result_value = match self.program.infer_inst_type(&self.l.method, inst_ref) {
                     // Instructions that return void don't have a result value.
                     // It would be a waste to assign a register to them.
                     Type::Void => None,
@@ -634,16 +612,17 @@ impl<'a> Spiller<'a> {
                 };
                 (ProgPt::BeforeInst(inst_ref), result_value)
             } else {
-                self.method
+                self.l
+                    .method
                     .block_mut(block_ref)
                     .term
-                    .for_each_inst_ref(&mut insert_args);
+                    .for_each_inst_ref(|inst_ref| args.insert(*inst_ref));
                 (ProgPt::BeforeTerm(block_ref), None)
             };
             let reloading = args.difference(&live).cloned().collect::<Vec<_>>();
             let h = self.spill_heuristic[&prog_pt].clone();
 
-            let not_big_call = args.len() + (result_value.is_some() as usize) <= self.max_reg;
+            let not_big_call = args.len() + (result_value.is_some() as usize) <= self.l.max_reg;
 
             if not_big_call {
                 for var in reloading.iter() {
@@ -651,7 +630,7 @@ impl<'a> Spiller<'a> {
                     spilled.insert(*var);
                 }
                 #[rustfmt::skip]
-                limit(self, &mut live, &mut spilled, &h, &prog_pt, self.max_reg);
+                limit(self, &mut live, &mut spilled, &h, &prog_pt, self.l.max_reg);
             } else {
                 // No way to ensure all arguments (and result, if any) are in registers.
                 // This happens for big function calls. But that needs to be
@@ -662,7 +641,7 @@ impl<'a> Spiller<'a> {
                 .get(i + 1)
                 .cloned()
                 .map_or(ProgPt::BeforeTerm(block_ref), ProgPt::BeforeInst);
-            let without_res = self.max_reg - result_value.is_some() as usize;
+            let without_res = self.l.max_reg - result_value.is_some() as usize;
             // The heuristic map based on which we make the spill decision is
             // the one for the program point AFTER the instruction.
             let mut h_post = self.spill_heuristic[&post_pt].clone();
@@ -686,7 +665,8 @@ impl<'a> Spiller<'a> {
                     self.add_reload(&prog_pt, var);
                 }
             } else {
-                self.mem_args
+                self.l
+                    .nm_args
                     .insert(insts[i], reloading.into_iter().collect());
             }
         }
@@ -697,7 +677,7 @@ impl<'a> Spiller<'a> {
     /// Insertion of spills and reloads breaks the SSA form. This function
     /// restores it.
     fn reconstruct_ssa(&mut self) -> Method {
-        let mut new_method = self.method.clone();
+        let mut new_method = self.l.method.clone();
         // Identify variables that have been split and reloaded. These variables
         // have their SSA forms broken and we need to fix them.
         let mut var_to_def_blocks: HashMap<InstRef, HashSet<BlockRef>> = HashMap::new();
@@ -709,12 +689,12 @@ impl<'a> Spiller<'a> {
         phi_spills_sorted.sort_by_key(|inst_ref| inst_ref.0);
         let mut used_by_phi_spills: HashSet<InstRef> = HashSet::new();
         for inst_ref in phi_spills_sorted {
-            self.spill_slots.entry(*inst_ref).or_insert_with(|| {
-                let ty = self.program.infer_inst_type(&self.method, *inst_ref);
+            self.l.spill_slots.entry(*inst_ref).or_insert_with(|| {
+                let ty = self.program.infer_inst_type(&self.l.method, *inst_ref);
                 let name = make_internal_ident(&format!("spill slot for {}", inst_ref));
                 new_method.next_stack_slot(ty, name)
             });
-            let Inst::Phi(map) = self.method.inst(*inst_ref) else {
+            let Inst::Phi(map) = self.l.method.inst(*inst_ref) else {
                 unreachable!();
             };
             used_by_phi_spills.extend(map.values().cloned());
@@ -741,8 +721,8 @@ impl<'a> Spiller<'a> {
                     ReloadSpill::Reload(inst) | ReloadSpill::Spill(inst) => *inst,
                 };
                 if !self.is_rematerializable(inst_ref) || used_by_phi_spills.contains(&inst_ref) {
-                    self.spill_slots.entry(inst_ref).or_insert_with(|| {
-                        let ty = self.program.infer_inst_type(&self.method, inst_ref);
+                    self.l.spill_slots.entry(inst_ref).or_insert_with(|| {
+                        let ty = self.program.infer_inst_type(&self.l.method, inst_ref);
                         let name = make_internal_ident(&format!("spill slot for {}", inst_ref));
                         new_method.next_stack_slot(ty, name)
                     });
@@ -770,7 +750,7 @@ impl<'a> Spiller<'a> {
                             let new_inst = match sr {
                                 ReloadSpill::Reload(var) => {
                                     if !self.is_rematerializable(*var) {
-                                        Inst::Load(Address::Local(self.spill_slots[var]))
+                                        Inst::Load(Address::Local(self.l.spill_slots[var]))
                                     } else {
                                         self.rematerialize(*var)
                                     }
@@ -780,7 +760,7 @@ impl<'a> Spiller<'a> {
                                         || used_by_phi_spills.contains(var)
                                     {
                                         Inst::Store {
-                                            addr: Address::Local(self.spill_slots[var]),
+                                            addr: Address::Local(self.l.spill_slots[var]),
                                             value: *var,
                                         }
                                     } else {
@@ -881,7 +861,7 @@ impl<'a> Spiller<'a> {
             let mut visited = worklist.iter().cloned().collect::<HashSet<_>>();
             let mut dominance_frontier = HashSet::new();
             while let Some(block) = worklist.pop() {
-                for frontier in self.dom.dominance_frontier(block) {
+                for frontier in self.l.dom.dominance_frontier(block) {
                     dominance_frontier.insert(*frontier);
                     if visited.insert(*frontier) {
                         worklist.push(*frontier);
@@ -903,7 +883,7 @@ impl<'a> Spiller<'a> {
                                 ($prog_pt, block),
                                 var,
                                 &dominance_frontier,
-                                &self.dom,
+                                &self.l.dom,
                                 &mut real_var,
                                 &predecessors,
                             );
@@ -931,7 +911,7 @@ impl<'a> Spiller<'a> {
                                         (ProgPt::AfterTerm(*block), *block),
                                         var,
                                         &dominance_frontier,
-                                        &self.dom,
+                                        &self.l.dom,
                                         &mut real_var,
                                         &predecessors,
                                     );
@@ -943,10 +923,8 @@ impl<'a> Spiller<'a> {
                             *map = new_map;
                         }
                         _ => {
-                            if let Some(mem_args) = self.mem_args.get(&inst_ref) {
-                                if mem_args.contains(&var) {
-                                    continue; // No need to fix usage of memory arguments.
-                                }
+                            if !self.l.nm_args.is_materialized(inst_ref, var) {
+                                continue; // No need to fix usage of non-materialized arguments.
                             }
                             resolve_uses!(
                                 new_method.inst_mut(inst_ref),
@@ -960,8 +938,8 @@ impl<'a> Spiller<'a> {
         }
 
         for (var, real_var) in &real_var {
-            if let Some(spill_slot) = self.spill_slots.get(real_var) {
-                self.spill_slots.insert(*var, *spill_slot);
+            if let Some(spill_slot) = self.l.spill_slots.get(real_var) {
+                self.l.spill_slots.insert(*var, *spill_slot);
             }
         }
 
@@ -977,7 +955,8 @@ impl<'a> Spiller<'a> {
                 .map(|(block, var)| {
                     (
                         block,
-                        self.spill_slots
+                        self.l
+                            .spill_slots
                             .get(&var)
                             .cloned()
                             .unwrap_or_else(|| panic!("no spill slot for {}", var)),
@@ -986,7 +965,7 @@ impl<'a> Spiller<'a> {
                 .collect::<HashMap<_, _>>();
             *inst_mut = Inst::PhiMem {
                 src: mem_map,
-                dst: self.spill_slots[&inst_ref],
+                dst: self.l.spill_slots[&inst_ref],
             }
         }
 
@@ -1001,7 +980,7 @@ impl<'a> Spiller<'a> {
         output.push_str("  node [shape=box fontname=Courier];\n");
 
         let mut stack_slots = Table::new();
-        for (stack_slot_ref, stack_slot) in self.method.iter_slack_slots() {
+        for (stack_slot_ref, stack_slot) in self.l.method.iter_slack_slots() {
             stack_slots.add_row(
                 TableRow::new()
                     .add(stack_slot_ref)
@@ -1016,9 +995,9 @@ impl<'a> Spiller<'a> {
             )
             .as_str(),
         );
-        for (block_ref, block) in self.method.iter_blocks() {
+        for (block_ref, block) in self.l.method.iter_blocks() {
             let mut block_label = format!("{}:", block_ref);
-            if let Some(annotation) = self.method.get_block_annotation(&block_ref) {
+            if let Some(annotation) = self.l.method.get_block_annotation(&block_ref) {
                 block_label.push_str(format!(" ; {}", annotation).as_str());
             }
             // block_label.push('\n');
@@ -1046,8 +1025,8 @@ impl<'a> Spiller<'a> {
                 let mut row = TableRow::new()
                     .add(inst)
                     .add('=')
-                    .add(self.method.inst(*inst));
-                if let Some(annotation) = self.method.get_inst_annotation(inst) {
+                    .add(self.l.method.inst(*inst));
+                if let Some(annotation) = self.l.method.get_inst_annotation(inst) {
                     row = row.add(format!("; {}", annotation));
                 }
                 if self.phi_spills.contains(inst) {
@@ -1067,7 +1046,7 @@ impl<'a> Spiller<'a> {
             let block_label = format!("{:?}", block_label).replace("\\n", "\\l ");
             output.push_str(format!("  {} [label={}];\n", block_ref, block_label).as_str());
         }
-        for (block_ref, block) in self.method.iter_blocks() {
+        for (block_ref, block) in self.l.method.iter_blocks() {
             match block.term {
                 Terminator::Jump(target) => {
                     output.push_str(format!("  {} -> {};\n", block_ref, target).as_str());

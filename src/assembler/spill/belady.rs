@@ -6,6 +6,7 @@ use std::{collections::VecDeque, fmt};
 use im::HashMap;
 
 use crate::{
+    assembler::NonMaterializedArgMapExt,
     inter::ir::{BlockRef, Inst, InstRef},
     opt::for_each_successor,
 };
@@ -132,9 +133,9 @@ impl Spiller<'_> {
     pub(super) fn eval_spill_heuristic(&mut self) {
         // Use dominate tree post order to reduce the number of iterations
         // needed for convergence.
-        let postorder = self.dom.postorder(self.method.entry);
+        let postorder = self.l.dom.postorder(self.l.method.entry);
         let mut q = VecDeque::new();
-        let mut in_queue = vec![false; self.method.n_blocks()];
+        let mut in_queue = vec![false; self.l.method.n_blocks()];
         for block in postorder {
             q.push_back(block);
             in_queue[block.0] = true;
@@ -142,7 +143,7 @@ impl Spiller<'_> {
         while let Some(block) = q.pop_front() {
             in_queue[block.0] = false;
             if self.eval_spill_heuristic_for_block(block) {
-                for &p in self.predecessors[block.0].iter() {
+                for &p in self.l.predecessors[block.0].iter() {
                     if !in_queue[p.0] {
                         q.push_back(p);
                         in_queue[p.0] = true;
@@ -176,13 +177,13 @@ impl Spiller<'_> {
         let mut h = BeladyMap::default();
         // Compute spill heuristic backwards.
         // h is the union (min-merge) of the spill heuristic of all successors.
-        for_each_successor(&self.method, block_ref, |succ| {
-            let first_pt = self.method.first_prog_pt(succ);
+        for_each_successor(&self.l.method, block_ref, |succ| {
+            let first_pt = self.l.method.first_prog_pt(succ);
             if let Some(h_successor) = self.spill_heuristic.get(&first_pt) {
                 h.merge_min(h_successor);
             }
-            for inst_ref in self.method.block(succ).insts.iter() {
-                match self.method.inst(*inst_ref) {
+            for inst_ref in self.l.method.block(succ).insts.iter() {
+                match self.l.method.inst(*inst_ref) {
                     Inst::Phi(map) => {
                         h.remove(inst_ref);
                         // Phi function at the successor block means that the
@@ -199,7 +200,8 @@ impl Spiller<'_> {
             return false;
         }
         // Update value use in terminator.
-        self.method
+        self.l
+            .method
             .block_mut(block_ref)
             .term
             .for_each_inst_ref(|inst_ref| h.insert(*inst_ref, 0));
@@ -207,16 +209,20 @@ impl Spiller<'_> {
             return false;
         }
         h.increment_all(); // Increase distance by one. One for the terminator instruction.
-        let block = self.method.block(block_ref);
+        let block = self.l.method.block(block_ref);
         // Go through the instructions in reverse order.
         for inst_ref in block.insts.clone().into_iter().rev() {
-            match self.method.inst_mut(inst_ref) {
+            match self.l.method.inst_mut(inst_ref) {
                 Inst::Phi(_) | Inst::PhiMem { .. } => break, // Phi instructions are handled above.
                 inst => {
                     // inst_ref has just been defined, so it's not live above.
                     h.remove(&inst_ref);
                     // Update value use in the instruction.
-                    inst.for_each_inst_ref(|inst_ref| h.insert(*inst_ref, 0));
+                    inst.for_each_inst_ref(|arg_ref| {
+                        if self.l.nm_args.is_materialized(inst_ref, *arg_ref) {
+                            h.insert(*arg_ref, 0)
+                        }
+                    });
                     if !self.update_spill_heuristic(ProgPt::BeforeInst(inst_ref), &h) {
                         return false;
                     }

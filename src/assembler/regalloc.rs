@@ -82,7 +82,7 @@ impl<'a> RegAllocator<'a> {
                     for arg in args {
                         let from_mem = self
                             .l
-                            .mem_args
+                            .nm_args
                             .get(&inst_ref)
                             .map_or(false, |mem| mem.contains(arg));
                         if !from_mem {
@@ -139,7 +139,7 @@ impl<'a> RegAllocator<'a> {
                     if !self.live_at[&next_pt].contains(inst) {
                         let in_mem = self
                             .l
-                            .mem_args
+                            .nm_args
                             .get(inst_ref)
                             .map_or(false, |mem| mem.contains(inst));
                         if !in_mem {
