@@ -151,6 +151,7 @@ pub fn optimize(mut program: Program, optimizations: &[Optimization]) -> Program
     let mut optimizations: HashSet<_> = optimizations.iter().cloned().collect();
     if optimizations.remove(&Optimization::All) {
         optimizations.extend([
+            Optimization::GVNPRE,
             Optimization::CopyPropagation,
             Optimization::DeadCodeElimination,
             Optimization::CommonSubexpressionElimination,
