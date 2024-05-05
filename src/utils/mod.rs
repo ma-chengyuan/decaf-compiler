@@ -35,6 +35,7 @@ pub fn make_internal_ident(s: &str) -> Ident {
 }
 
 /// Opens and shows a graphviz dot file in the default viewer.
+#[allow(dead_code)]
 pub fn show_graphviz(dot: &str) {
     use std::io::Write;
     use std::process::{Command, Stdio};

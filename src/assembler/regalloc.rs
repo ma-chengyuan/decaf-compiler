@@ -8,7 +8,7 @@ use crate::{
     opt::for_each_successor,
 };
 
-use super::LoweredMethod;
+use super::{LoweredMethod, NonMaterializedArgMapExt};
 
 pub struct RegAllocator<'a> {
     program: &'a Program,
@@ -68,33 +68,31 @@ impl<'a> RegAllocator<'a> {
         });
         self.live_at
             .insert(ProgPt::AfterTerm(block_ref), live.clone());
-        method
-            .block_mut(block_ref)
-            .term
-            .for_each_inst_ref(|inst| live.insert(*inst));
+        let term = &mut method.block_mut(block_ref).term;
+        match self.l.nm_terms.get_mut(&block_ref) {
+            None => term.for_each_inst_ref(|inst| live.insert(*inst)),
+            Some((cond, nm)) => {
+                cond.for_each_inst_ref(|arg_ref| {
+                    if !nm.contains(arg_ref) {
+                        live.insert(*arg_ref);
+                    }
+                });
+            }
+        }
         self.live_at
             .insert(ProgPt::BeforeTerm(block_ref), live.clone());
         for inst_ref in method.block(block_ref).insts.clone().into_iter().rev() {
             match method.inst_mut(inst_ref) {
                 Inst::Phi(_) | Inst::PhiMem { .. } => break,
-                Inst::Call { args, .. } => {
-                    live.remove(&inst_ref);
-                    for arg in args {
-                        let from_mem = self
-                            .l
-                            .mem_args
-                            .get(&inst_ref)
-                            .map_or(false, |mem| mem.contains(arg));
-                        if !from_mem {
-                            live.insert(*arg);
-                        }
-                    }
-                    self.live_at
-                        .insert(ProgPt::BeforeInst(inst_ref), live.clone());
-                }
                 inst => {
-                    live.remove(&inst_ref);
-                    inst.for_each_inst_ref(|inst_ref| live.insert(*inst_ref));
+                    if inst.has_side_effects() || live.contains(&inst_ref) {
+                        live.remove(&inst_ref);
+                        inst.for_each_inst_ref(|arg_ref| {
+                            if self.l.nm_args.is_materialized(inst_ref, *arg_ref) {
+                                live.insert(*arg_ref);
+                            }
+                        });
+                    }
                     self.live_at
                         .insert(ProgPt::BeforeInst(inst_ref), live.clone());
                 }
@@ -133,21 +131,21 @@ impl<'a> RegAllocator<'a> {
                 _ if i + 1 < insts.len() => ProgPt::BeforeInst(insts[i + 1]),
                 _ => ProgPt::BeforeTerm(block_ref),
             };
+            if !method.inst(*inst_ref).has_side_effects()
+                && !self.live_at[&next_pt].contains(inst_ref)
+            {
+                continue; // Skip dead instructions.
+            }
             match method.inst_mut(*inst_ref) {
                 Inst::Phi(_) | Inst::PhiMem { .. } => {}
-                inst => inst.for_each_inst_ref(|inst| {
-                    if !self.live_at[&next_pt].contains(inst) {
-                        let in_mem = self
-                            .l
-                            .mem_args
-                            .get(inst_ref)
-                            .map_or(false, |mem| mem.contains(inst));
-                        if !in_mem {
-                            if let Some(reg) = self.reg.get(inst) {
-                                // println!("  freeing register {} from {}", reg, inst);
-                                used.remove(reg);
-                                free.insert(*reg);
-                            }
+                inst => inst.for_each_inst_ref(|arg_ref| {
+                    if !self.live_at[&next_pt].contains(arg_ref)
+                        && self.l.nm_args.is_materialized(*inst_ref, *arg_ref)
+                    {
+                        if let Some(reg) = self.reg.get(arg_ref) {
+                            // println!("  freeing register {} from {}", reg, inst);
+                            used.remove(reg);
+                            free.insert(*reg);
                         }
                     }
                 }),

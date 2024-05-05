@@ -12,7 +12,7 @@ use super::{constant::Const, types::Type};
 
 /// An opaque reference to an SSA instruction.
 /// Instructions represent primitive types.
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct InstRef(pub usize);
 
 impl InstRef {
@@ -34,7 +34,7 @@ impl fmt::Display for InstRef {
 }
 
 /// An opaque reference to a block.
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct BlockRef(pub usize);
 
 impl fmt::Debug for BlockRef {
@@ -250,6 +250,17 @@ impl Inst {
             }
             _ => {}
         }
+    }
+
+    pub fn has_side_effects(&self) -> bool {
+        matches!(
+            self,
+            Inst::PhiMem { .. }
+                | Inst::Call { .. }
+                | Inst::Store { .. }
+                | Inst::StoreArray { .. }
+                | Inst::Initialize { .. }
+        )
     }
 }
 
