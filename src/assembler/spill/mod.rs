@@ -68,6 +68,10 @@ pub struct Spiller<'a> {
     /// in some register. The latter is a pure memory-to-memory operation. We
     /// require that operands of a phi-spill are also spilled.
     phi_spills: HashSet<InstRef>,
+
+    /// Set of instructions that are skipped during spilling because they have
+    /// no side effects and their results are not used.
+    skipped_insts: HashSet<InstRef>,
 }
 
 impl<'a> Spiller<'a> {
@@ -92,6 +96,7 @@ impl<'a> Spiller<'a> {
             spill_reloads: HashMap::new(),
             spill_sites: HashMap::new(),
             phi_spills: HashSet::new(),
+            skipped_insts: HashSet::new(),
             inst_to_block_pos,
             l,
         }
@@ -590,6 +595,11 @@ impl<'a> Spiller<'a> {
             // insts.len() + 1 because terminator counts as an "instruction"
             // The arguments of the instruction at i.
             let mut args = HashSet::new();
+            // The program point after the instruction at i.
+            let post_pt = insts
+                .get(i + 1)
+                .cloned()
+                .map_or(ProgPt::BeforeTerm(block_ref), ProgPt::BeforeInst);
             // let mut insert_args = |inst_ref: &mut InstRef| args.insert(*inst_ref);
             // Get the program point before the instruction at i and the result value, if any.
             let (prog_pt, result_value) = if i < insts.len() {
@@ -604,6 +614,12 @@ impl<'a> Spiller<'a> {
                         });
                     }
                 };
+                if !self.l.method.inst(inst_ref).has_side_effects()
+                    && !self.spill_heuristic[&post_pt].is_live(&inst_ref)
+                {
+                    self.skipped_insts.insert(inst_ref);
+                    continue;
+                }
                 let result_value = match self.program.infer_inst_type(&self.l.method, inst_ref) {
                     // Instructions that return void don't have a result value.
                     // It would be a waste to assign a register to them.
@@ -612,11 +628,17 @@ impl<'a> Spiller<'a> {
                 };
                 (ProgPt::BeforeInst(inst_ref), result_value)
             } else {
-                self.l
-                    .method
-                    .block_mut(block_ref)
-                    .term
-                    .for_each_inst_ref(|inst_ref| args.insert(*inst_ref));
+                let term = &mut self.l.method.block_mut(block_ref).term;
+                match self.l.nm_terms.get_mut(&block_ref) {
+                    None => term.for_each_inst_ref(|inst_ref| args.insert(*inst_ref)),
+                    Some((cond, nm)) => {
+                        cond.for_each_inst_ref(|arg_ref| {
+                            if !nm.contains(arg_ref) {
+                                args.insert(*arg_ref);
+                            }
+                        });
+                    }
+                }
                 (ProgPt::BeforeTerm(block_ref), None)
             };
             let reloading = args.difference(&live).cloned().collect::<Vec<_>>();
@@ -637,10 +659,6 @@ impl<'a> Spiller<'a> {
                 // special-cased anyways, so life is good.
             }
             // Now we need to possibly spill another register to make room for the value.
-            let post_pt = insts
-                .get(i + 1)
-                .cloned()
-                .map_or(ProgPt::BeforeTerm(block_ref), ProgPt::BeforeInst);
             let without_res = self.l.max_reg - result_value.is_some() as usize;
             // The heuristic map based on which we make the spill decision is
             // the one for the program point AFTER the instruction.
@@ -667,7 +685,9 @@ impl<'a> Spiller<'a> {
             } else {
                 self.l
                     .nm_args
-                    .insert(insts[i], reloading.into_iter().collect());
+                    .entry(insts[i])
+                    .or_default()
+                    .extend(reloading);
             }
         }
         self.reg_out[block_ref.0] = live;
@@ -923,6 +943,17 @@ impl<'a> Spiller<'a> {
                             *map = new_map;
                         }
                         _ => {
+                            if self.skipped_insts.contains(&inst_ref) {
+                                // Skip update of variable resolution if this
+                                // instruction was skipped during spill
+                                // generation phase. The instruction was skipped
+                                // because it has no side effects and its result
+                                // is dead. Such instructions will remain dead
+                                // in new_method, and both the assembler and the
+                                // register allocator will ignore them.
+                                // TODO: probably delete such instructions?
+                                continue;
+                            }
                             if !self.l.nm_args.is_materialized(inst_ref, var) {
                                 continue; // No need to fix usage of non-materialized arguments.
                             }
@@ -933,7 +964,16 @@ impl<'a> Spiller<'a> {
                         }
                     }
                 }
-                resolve_uses!(new_method.block_mut(block).term, ProgPt::BeforeTerm(block));
+                match self.l.nm_terms.get_mut(&block) {
+                    None => {
+                        resolve_uses!(new_method.block_mut(block).term, ProgPt::BeforeTerm(block))
+                    }
+                    Some((cond, nm)) => {
+                        if !nm.contains(&var) {
+                            resolve_uses!(cond, ProgPt::BeforeTerm(block));
+                        }
+                    }
+                }
             }
         }
 

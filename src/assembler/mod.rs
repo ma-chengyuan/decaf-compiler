@@ -21,14 +21,19 @@ use crate::{
         dom::{compute_dominance, Dominance},
         for_each_successor, predecessors, reverse_postorder, split_critical_edges,
     },
+    scan::location::Location,
 };
 
-use self::{imm_nm::ImmediateNonMaterializer, regalloc::RegAllocator, spill::Spiller};
+use self::{
+    imm_nm::ImmediateNonMaterializer, regalloc::RegAllocator, spill::Spiller,
+    term_nm::TerminatorNonMaterializer,
+};
 
 pub mod imm_nm;
 pub mod par_copy;
 pub mod regalloc;
 pub mod spill;
+pub mod term_nm;
 
 /// An augmentation to the `Method` struct that contains information needed for
 /// code generation.
@@ -59,6 +64,13 @@ pub struct LoweredMethod {
     ///   require a separate register.
     pub nm_args: HashMap<InstRef, HashSet<InstRef>>,
 
+    /// Non-materialized terminator conditions. Similar to `nm_args`, but for
+    /// terminators. In x86-64, a conditional jump need not be implemented by
+    /// first evaluating the condition as boolean, then jumping based on the
+    /// result. Instead, the condition can be directly encoded in the jump
+    /// instruction.
+    pub nm_terms: HashMap<BlockRef, (Inst, HashSet<InstRef>)>,
+
     // Filled in by the spiller
     /// A mapping from spilled variables to their spill slots.
     pub spill_slots: HashMap<InstRef, StackSlotRef>,
@@ -83,6 +95,7 @@ impl LoweredMethod {
             max_reg: 0,
             spill_slots: HashMap::new(),
             nm_args: HashMap::new(),
+            nm_terms: HashMap::new(),
             live_at: HashMap::new(),
             reg: HashMap::new(),
         }
@@ -174,7 +187,12 @@ impl Assembler {
             // crate::utils::show_graphviz(&method.dump_graphviz());
             let mut lowered = LoweredMethod::new(method);
             ImmediateNonMaterializer::new(&mut lowered).run();
-            Spiller::new(&self.program, &mut lowered, REGS.len()).spill();
+            TerminatorNonMaterializer::new(&mut lowered).run();
+            let max_reg = REGS.len();
+            // For debugging. Smaller max_reg pushes the spiller to limit where
+            // more bugs are likely to be found.
+            // let max_reg = 7;
+            Spiller::new(&self.program, &mut lowered, max_reg).spill();
             RegAllocator::new(&self.program, &mut lowered).allocate();
             MethodAssembler::new(self, &lowered).assemble_method();
         }
@@ -485,20 +503,14 @@ impl<'a> MethodAssembler<'a> {
                     if let Some(ret) = ret {
                         if let Some(annotation) = self.l.method.get_inst_annotation(ret) {
                             for span in annotation.spans() {
-                                self.emit_code(format!(
-                                    ".loc 0 {} {}",
-                                    span.start().line,
-                                    span.start().column
-                                ));
+                                let Location { line, column, .. } = span.start();
+                                self.emit_code(format!(".loc 0 {} {}", line, column));
                             }
                         }
                         self.emit_code(format!("movq {}, %rax", self.reg(*ret)));
                     }
-                    self.emit_code(format!(
-                        ".loc 0 {} {}",
-                        self.l.method.span.end().line,
-                        self.l.method.span.end().column - 1 // exclusive
-                    ));
+                    let Location { line, column, .. } = self.l.method.span.end();
+                    self.emit_code(format!(".loc 0 {} {}", line, column - 1));
                     if self.l.method.name.inner.as_ref() == "main" {
                         assert!(ret.is_none());
                         // return 0;
@@ -514,11 +526,31 @@ impl<'a> MethodAssembler<'a> {
                 cond,
                 true_,
                 false_,
-            } => {
-                self.emit_code(format!("cmpq $0, {}", self.reg(*cond)));
-                self.emit_code(format!("je {}", self.block_label(*false_)));
-                self.emit_code(format!("jmp {}", self.block_label(*true_)));
-            }
+            } => match self.l.nm_terms.get(&block_ref) {
+                None => {
+                    self.emit_code(format!("cmpq $0, {}", self.reg(*cond)));
+                    self.emit_code(format!("je {}", self.block_label(*false_)));
+                    self.emit_code(format!("jmp {}", self.block_label(*true_)));
+                }
+                Some((cond, _)) => {
+                    let (lhs, rhs, jmp) = match cond {
+                        Inst::Eq(lhs, rhs) => (lhs, rhs, "je"),
+                        Inst::Neq(lhs, rhs) => (lhs, rhs, "jne"),
+                        Inst::Less(lhs, rhs) => (lhs, rhs, "jl"),
+                        Inst::LessEq(lhs, rhs) => (lhs, rhs, "jle"),
+                        Inst::Not(var) => {
+                            self.emit_code(format!("cmpq $0, {}", self.reg(*var)));
+                            self.emit_code(format!("je {}", self.block_label(*true_)));
+                            self.emit_code(format!("jmp {}", self.block_label(*false_)));
+                            return;
+                        }
+                        _ => unreachable!(),
+                    };
+                    self.emit_code(format!("cmpq {}, {}", self.reg(rhs), self.reg(lhs)));
+                    self.emit_code(format!("{} {}", jmp, self.block_label(*true_)));
+                    self.emit_code(format!("jmp {}", self.block_label(*false_)));
+                }
+            },
         }
     }
 
@@ -534,19 +566,14 @@ impl<'a> MethodAssembler<'a> {
             for (i, inst_ref) in insts.iter().enumerate() {
                 self.emit_inst_annotation(*inst_ref);
                 let inst = self.l.method.inst(*inst_ref);
-                macro_rules! skip_non_side_effective {
-                    () => {
-                        // Reg allocator did not assign a register to this
-                        // instruction because it's result is dead.
-                        if !self.l.reg.contains_key(inst_ref) {
-                            continue;
-                        }
-                    };
+                if !inst.has_side_effects() && !self.l.reg.contains_key(inst_ref) {
+                    // If an instruction is not side-effective, and its result
+                    // does not have a register assigned, it's dead.
+                    continue;
                 }
                 match inst {
                     Inst::Phi(_) | Inst::PhiMem { .. } => continue, // They are taken care of elsewhere!
                     Inst::Copy(src) => {
-                        skip_non_side_effective!();
                         self.emit_code(format!(
                             "movq {}, {}",
                             self.arg(*inst_ref, *src),
@@ -554,7 +581,6 @@ impl<'a> MethodAssembler<'a> {
                         ));
                     }
                     Inst::Add(lhs, rhs) | Inst::Sub(lhs, rhs) | Inst::Mul(lhs, rhs) => {
-                        skip_non_side_effective!();
                         let asm_inst = match inst {
                             Inst::Add(_, _) => "addq",
                             Inst::Sub(_, _) => "subq",
@@ -607,7 +633,6 @@ impl<'a> MethodAssembler<'a> {
                         }
                     }
                     Inst::Div(lhs, rhs) | Inst::Mod(lhs, rhs) => {
-                        skip_non_side_effective!();
                         // println!("{:?}", self.l.reg);
                         self.emit_code(format!("movq {}, %rax", self.reg(lhs)));
                         self.emit_code("cqto"); // Godbolt does it
@@ -624,7 +649,6 @@ impl<'a> MethodAssembler<'a> {
                         ));
                     }
                     Inst::Neg(var) => {
-                        skip_non_side_effective!();
                         if self.l.reg[var] != self.l.reg[inst_ref] {
                             self.emit_code(format!(
                                 "movq {}, {}",
@@ -635,7 +659,6 @@ impl<'a> MethodAssembler<'a> {
                         self.emit_code(format!("negq {}", self.reg(inst_ref)));
                     }
                     Inst::Not(var) => {
-                        skip_non_side_effective!();
                         self.emit_code(format!("cmpq $0, {}", self.reg(var)));
                         self.emit_code("sete %al");
                         self.emit_code(format!("movzbq %al, {}", self.reg(inst_ref)));
@@ -644,7 +667,6 @@ impl<'a> MethodAssembler<'a> {
                     | Inst::Neq(lhs, rhs)
                     | Inst::Less(lhs, rhs)
                     | Inst::LessEq(lhs, rhs) => {
-                        skip_non_side_effective!();
                         let inst_name = match inst {
                             Inst::Eq(_, _) => "sete",
                             Inst::Neq(_, _) => "setne",
@@ -657,28 +679,20 @@ impl<'a> MethodAssembler<'a> {
                         self.emit_code(format!("movzbq %al, {}", self.reg(inst_ref)));
                     }
                     Inst::LoadConst(c) => {
-                        skip_non_side_effective!();
                         self.asm.load_int_or_bool_const(c, self.reg(inst_ref));
                     }
-                    Inst::Load(addr) => {
-                        skip_non_side_effective!();
-                        match addr {
-                            Address::Global(name) => {
-                                self.emit_code(format!(
-                                    "movq {}(%rip), {}",
-                                    name,
-                                    self.reg(inst_ref)
-                                ));
-                            }
-                            Address::Local(stack_slot) => {
-                                self.emit_code(format!(
-                                    "movq {}(%rbp), {}",
-                                    self.stack_slot_to_offset[stack_slot],
-                                    self.reg(inst_ref)
-                                ));
-                            }
+                    Inst::Load(addr) => match addr {
+                        Address::Global(name) => {
+                            self.emit_code(format!("movq {}(%rip), {}", name, self.reg(inst_ref)));
                         }
-                    }
+                        Address::Local(stack_slot) => {
+                            self.emit_code(format!(
+                                "movq {}(%rbp), {}",
+                                self.stack_slot_to_offset[stack_slot],
+                                self.reg(inst_ref)
+                            ));
+                        }
+                    },
                     Inst::Store { addr, value } => match addr {
                         Address::Global(name) => {
                             self.emit_code(format!("movq {}, {}(%rip)", self.reg(value), name));
@@ -692,7 +706,6 @@ impl<'a> MethodAssembler<'a> {
                         }
                     },
                     Inst::LoadArray { addr, index } => {
-                        skip_non_side_effective!();
                         // Do bound check first
                         let (length, elem_size) =
                             match self.asm.program.infer_address_type(&self.l.method, addr) {
@@ -767,7 +780,6 @@ impl<'a> MethodAssembler<'a> {
                         self.emit_local_initialize(value, self.stack_slot_to_offset[&stack_slot])
                     }
                     Inst::LoadStringLiteral(s) => {
-                        skip_non_side_effective!();
                         let str_name = format!("str_{}", self.asm.data.len());
                         self.emit_data_label(&str_name);
                         self.emit_data_code(format!(".string {:?}", s));

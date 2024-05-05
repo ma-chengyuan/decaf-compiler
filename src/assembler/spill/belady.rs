@@ -200,11 +200,19 @@ impl Spiller<'_> {
             return false;
         }
         // Update value use in terminator.
-        self.l
-            .method
-            .block_mut(block_ref)
-            .term
-            .for_each_inst_ref(|inst_ref| h.insert(*inst_ref, 0));
+        let term = &mut self.l.method.block_mut(block_ref).term;
+
+        match self.l.nm_terms.get_mut(&block_ref) {
+            None => term.for_each_inst_ref(|inst_ref| h.insert(*inst_ref, 0)),
+            Some((cond, nm)) => {
+                cond.for_each_inst_ref(|arg_ref| {
+                    if !nm.contains(arg_ref) {
+                        h.insert(*arg_ref, 0);
+                    }
+                });
+            }
+        }
+
         if !self.update_spill_heuristic(ProgPt::BeforeTerm(block_ref), &h) {
             return false;
         }
@@ -216,17 +224,25 @@ impl Spiller<'_> {
                 Inst::Phi(_) | Inst::PhiMem { .. } => break, // Phi instructions are handled above.
                 inst => {
                     // inst_ref has just been defined, so it's not live above.
-                    h.remove(&inst_ref);
-                    // Update value use in the instruction.
-                    inst.for_each_inst_ref(|arg_ref| {
-                        if self.l.nm_args.is_materialized(inst_ref, *arg_ref) {
-                            h.insert(*arg_ref, 0)
+                    if inst.has_side_effects() || h.is_live(&inst_ref) {
+                        h.remove(&inst_ref);
+                        // Update value use in the instruction.
+                        inst.for_each_inst_ref(|arg_ref| {
+                            if self.l.nm_args.is_materialized(inst_ref, *arg_ref) {
+                                h.insert(*arg_ref, 0)
+                            }
+                        });
+                        if !self.update_spill_heuristic(ProgPt::BeforeInst(inst_ref), &h) {
+                            return false;
                         }
-                    });
-                    if !self.update_spill_heuristic(ProgPt::BeforeInst(inst_ref), &h) {
-                        return false;
+                        h.increment_all(); // Increase distance by one. One for the instruction.
+                    } else {
+                        // println!("belady: skipping dead inst {}", inst_ref);
+                        // Dead instruction.
+                        if !self.update_spill_heuristic(ProgPt::BeforeInst(inst_ref), &h) {
+                            return false;
+                        }
                     }
-                    h.increment_all(); // Increase distance by one. One for the instruction.
                 }
             }
         }
