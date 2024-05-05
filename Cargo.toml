@@ -22,3 +22,5 @@ extend = "1.2.0"
 # priority-queue = "2.0"
 opener = "0.7"
 tempfile = "3.10"
+
+# good_lp = { version = "1.8", default-features = false, features = ["highs"] }

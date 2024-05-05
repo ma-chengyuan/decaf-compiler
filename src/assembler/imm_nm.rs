@@ -48,7 +48,13 @@ impl<'a> ImmediateNonMaterializer<'a> {
             }
             match inst {
                 Inst::Copy(src) => unmaterialize_if!(is_const(*src)),
-                Inst::Add(lhs, rhs) | Inst::Sub(lhs, rhs) | Inst::Mul(lhs, rhs) => {
+                Inst::Add(lhs, rhs)
+                | Inst::Sub(lhs, rhs)
+                | Inst::Mul(lhs, rhs)
+                | Inst::Eq(lhs, rhs)
+                | Inst::Neq(lhs, rhs)
+                | Inst::Less(lhs, rhs)
+                | Inst::LessEq(lhs, rhs) => {
                     unmaterialize_if!(is_const_32(*lhs));
                     unmaterialize_if!(is_const_32(*rhs));
                 }

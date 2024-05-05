@@ -1,5 +1,5 @@
-import difflib
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -109,6 +109,30 @@ def main():
                 test_case.expected_pass(stdout.decode("utf-8"))
 
     print(f"Passed {passed_cases}/{total_cases} tests")
+
+    if passed_cases == total_cases and shutil.which("hyperfine"):
+        for test_suite in ["../public-tests"]:
+            input_file_dir = Path(f"{test_suite}/derby/input")
+            if not input_file_dir.exists():
+                continue
+            output_file_dir = Path(f"{test_suite}/derby/output")
+            if not output_file_dir.exists():
+                output_file_dir.mkdir(parents=True)
+            for input_file in os.listdir(input_file_dir):
+                if not input_file.endswith(".dcf"):
+                    continue
+                proc = run(input_file_dir / input_file)
+                _, stderr = proc.communicate()
+                assert proc.returncode == 0
+                gcc = run_gcc()
+                _, stderr = gcc.communicate()
+                assert gcc.returncode == 0
+                print(f"Running hyperfine on {input_file}")
+                benchmark = subprocess.Popen(
+                    ["hyperfine", "--warmup", "5", "../../compiler/test_program"],
+                    cwd="../public-tests/derby/",
+                )
+                benchmark.communicate()
 
 
 if __name__ == "__main__":

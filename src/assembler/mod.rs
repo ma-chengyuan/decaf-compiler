@@ -532,7 +532,7 @@ impl<'a> MethodAssembler<'a> {
                     self.emit_code(format!("je {}", self.block_label(*false_)));
                     self.emit_code(format!("jmp {}", self.block_label(*true_)));
                 }
-                Some((cond, _)) => {
+                Some((cond, nm)) => {
                     let (lhs, rhs, jmp) = match cond {
                         Inst::Eq(lhs, rhs) => (lhs, rhs, "je"),
                         Inst::Neq(lhs, rhs) => (lhs, rhs, "jne"),
@@ -546,9 +546,36 @@ impl<'a> MethodAssembler<'a> {
                         }
                         _ => unreachable!(),
                     };
-                    self.emit_code(format!("cmpq {}, {}", self.reg(rhs), self.reg(lhs)));
-                    self.emit_code(format!("{} {}", jmp, self.block_label(*true_)));
-                    self.emit_code(format!("jmp {}", self.block_label(*false_)));
+                    let lhs = self.arg_helper(*lhs, !nm.contains(lhs));
+                    let rhs = self.arg_helper(*rhs, !nm.contains(rhs));
+                    match (lhs, rhs) {
+                        (AsmArg::Imm(lhs), AsmArg::Imm(rhs)) => {
+                            // Should have been handled by constant propagation
+                            let v = match cond {
+                                Inst::Eq(_, _) => lhs == rhs,
+                                Inst::Neq(_, _) => lhs != rhs,
+                                Inst::Less(_, _) => lhs < rhs,
+                                Inst::LessEq(_, _) => lhs <= rhs,
+                                _ => unreachable!(),
+                            };
+                            let target = if v { *true_ } else { *false_ };
+                            self.emit_code(format!("jmp {}", self.block_label(target)));
+                        }
+                        (
+                            mut lhs @ (AsmArg::Imm(_) | AsmArg::Reg(_)),
+                            mut rhs @ (AsmArg::Imm(_) | AsmArg::Reg(_)),
+                        ) => {
+                            let mut jmp = jmp.to_string();
+                            if let AsmArg::Imm(_) = lhs {
+                                std::mem::swap(&mut lhs, &mut rhs);
+                                jmp = jmp.replace('l', "g");
+                            }
+                            self.emit_code(format!("cmpq {}, {}", rhs, lhs));
+                            self.emit_code(format!("{} {}", jmp, self.block_label(*true_)));
+                            self.emit_code(format!("jmp {}", self.block_label(*false_)));
+                        }
+                        _ => unreachable!(),
+                    }
                 }
             },
         }
@@ -667,16 +694,40 @@ impl<'a> MethodAssembler<'a> {
                     | Inst::Neq(lhs, rhs)
                     | Inst::Less(lhs, rhs)
                     | Inst::LessEq(lhs, rhs) => {
-                        let inst_name = match inst {
-                            Inst::Eq(_, _) => "sete",
-                            Inst::Neq(_, _) => "setne",
-                            Inst::Less(_, _) => "setl",
-                            Inst::LessEq(_, _) => "setle",
+                        match (self.arg(*inst_ref, *lhs), self.arg(*inst_ref, *rhs)) {
+                            (AsmArg::Imm(lhs), AsmArg::Imm(rhs)) => {
+                                // Again constant propagation should have taken care of this
+                                let cond = match inst {
+                                    Inst::Eq(_, _) => lhs == rhs,
+                                    Inst::Neq(_, _) => lhs != rhs,
+                                    Inst::Less(_, _) => lhs < rhs,
+                                    Inst::LessEq(_, _) => lhs <= rhs,
+                                    _ => unreachable!(),
+                                } as i64;
+                                self.emit_code(format!("movq ${}, {}", cond, self.reg(inst_ref)));
+                            }
+                            (
+                                mut lhs @ (AsmArg::Imm(_) | AsmArg::Reg(_)),
+                                mut rhs @ (AsmArg::Imm(_) | AsmArg::Reg(_)),
+                            ) => {
+                                let mut inst_name = match inst {
+                                    Inst::Eq(_, _) => "sete",
+                                    Inst::Neq(_, _) => "setne",
+                                    Inst::Less(_, _) => "setl",
+                                    Inst::LessEq(_, _) => "setle",
+                                    _ => unreachable!(),
+                                }
+                                .to_string();
+                                if let AsmArg::Imm(_) = lhs {
+                                    std::mem::swap(&mut lhs, &mut rhs);
+                                    inst_name = inst_name.replace('l', "g");
+                                }
+                                self.emit_code(format!("cmpq {}, {}", rhs, lhs));
+                                self.emit_code(format!("{} %al", inst_name));
+                                self.emit_code(format!("movzbq %al, {}", self.reg(inst_ref)));
+                            }
                             _ => unreachable!(),
-                        };
-                        self.emit_code(format!("cmpq {}, {}", self.reg(rhs), self.reg(lhs)));
-                        self.emit_code(format!("{} %al", inst_name));
-                        self.emit_code(format!("movzbq %al, {}", self.reg(inst_ref)));
+                        }
                     }
                     Inst::LoadConst(c) => {
                         self.asm.load_int_or_bool_const(c, self.reg(inst_ref));
@@ -925,8 +976,8 @@ impl<'a> MethodAssembler<'a> {
         }
     }
 
-    fn arg(&self, inst_ref: InstRef, arg_ref: InstRef) -> AsmArg {
-        if self.l.nm_args.is_materialized(inst_ref, arg_ref) {
+    fn arg_helper(&self, arg_ref: InstRef, materialized: bool) -> AsmArg {
+        if materialized {
             AsmArg::Reg(self.reg(arg_ref))
         } else {
             match self.l.method.inst(arg_ref) {
@@ -946,6 +997,10 @@ impl<'a> MethodAssembler<'a> {
                 }
             }
         }
+    }
+
+    fn arg(&self, inst_ref: InstRef, arg_ref: InstRef) -> AsmArg {
+        self.arg_helper(arg_ref, self.l.nm_args.is_materialized(inst_ref, arg_ref))
     }
 
     fn get_bound_check_fail_label(&self, index: &AsmArg, length: usize, line: usize) -> String {
