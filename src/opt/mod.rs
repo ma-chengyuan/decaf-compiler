@@ -152,6 +152,7 @@ pub fn optimize(mut program: Program, optimizations: &[Optimization]) -> Program
     let mut optimizations: HashSet<_> = optimizations.iter().cloned().collect();
     if optimizations.remove(&Optimization::All) {
         optimizations.extend([
+            Optimization::GVNPRE,
             Optimization::CopyPropagation,
             Optimization::DeadCodeElimination,
             Optimization::CommonSubexpressionElimination,
@@ -197,6 +198,7 @@ pub fn optimize(mut program: Program, optimizations: &[Optimization]) -> Program
             gvnpre::gvnpre::perform_gvnpre(method);
         }
     }
+    crate::utils::show_graphviz(&program.methods.get("main").unwrap().dump_graphviz());
     // let mut ls = vec![];
     // for (name, method) in program.methods.iter() {
     //     // println!("{}:", name);
