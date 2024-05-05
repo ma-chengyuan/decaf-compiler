@@ -1,4 +1,4 @@
-use std::{backtrace, collections::HashMap};
+use std::collections::HashMap;
 
 use crate::inter::{
     constant::Const,

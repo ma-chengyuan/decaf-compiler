@@ -1,8 +1,8 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 
 use crate::{
     inter::{
-        ir::{BlockRef, Inst, InstRef, ProgPt, Program, Terminator},
+        ir::{BlockRef, Inst, InstRef, ProgPt, Program},
         types::Type,
     },
     opt::for_each_successor,
