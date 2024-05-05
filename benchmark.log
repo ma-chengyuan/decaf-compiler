@@ -1,3 +1,23 @@
+================================================================================
+e80db3a (reg alloc + imm_nm(+cmp) + const prop + term_nm)  (05/05/2024)
+================================================================================
+
+Running hyperfine on noise_median.dcf
+Benchmark 1: ../../compiler/test_program
+  Time (mean ± σ):      18.8 ms ±   0.3 ms    [User: 14.5 ms, System: 1.2 ms]
+  Range (min … max):    18.2 ms …  19.9 ms    156 runs
+ 
+Running hyperfine on saman_sl.dcf
+Benchmark 1: ../../compiler/test_program
+  Time (mean ± σ):      10.5 ms ±   0.3 ms    [User: 6.9 ms, System: 0.7 ms]
+  Range (min … max):     9.9 ms …  13.7 ms    265 runs
+ 
+  Warning: Statistical outliers were detected. Consider re-running this benchmark on a quiet system without any interferences from other programs. It might help to use the '--warmup' or '--prepare' options.
+ 
+Running hyperfine on segovia_blur.dcf
+Benchmark 1: ../../compiler/test_program
+  Time (mean ± σ):      60.3 ms ±   1.0 ms    [User: 53.6 ms, System: 5.5 ms]
+  Range (min … max):    59.3 ms …  63.3 ms    49 runs
 
 ================================================================================
 9fe9fd6 (reg alloc + imm_nm + const prop)  (05/04/2024)
