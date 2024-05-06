@@ -152,6 +152,7 @@ pub fn optimize(mut program: Program, optimizations: &[Optimization]) -> Program
             Optimization::CopyPropagation,
             Optimization::DeadCodeElimination,
             Optimization::CommonSubexpressionElimination,
+            Optimization::ConstantFolding,
         ]);
     }
 
@@ -162,8 +163,10 @@ pub fn optimize(mut program: Program, optimizations: &[Optimization]) -> Program
 
     for _ in 0..10 {
         // Constant folding
-        for method in program.methods.values_mut() {
-            constant_folding::fold_constants(method);
+        if optimizations.contains(&Optimization::ConstantFolding) {
+            for method in program.methods.values_mut() {
+                constant_folding::fold_constants(method);
+            }
         }
 
         // Copy propagation
