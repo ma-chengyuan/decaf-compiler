@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use crate::{
     inter::ir::{BlockRef, Inst, Method, Program, Terminator},
     opt::ssa::construct_ssa,
-    utils::cli::Optimization,
+    utils::{cli::Optimization, show_graphviz},
 };
 
 use self::ssa::destruct_ssa;
@@ -191,14 +191,22 @@ pub fn optimize(mut program: Program, optimizations: &[Optimization]) -> Program
             }
         }
     }
-    crate::utils::show_graphviz(&program.methods.get("main").unwrap().dump_graphviz());
 
+    show_graphviz(&program.methods.values().next().unwrap().dump_graphviz());
     if optimizations.contains(&Optimization::GVNPRE) {
         for method in program.methods.values_mut() {
             gvnpre::gvnpre::perform_gvnpre(method);
         }
+        for _ in 0..10 {
+            for method in program.methods.values_mut() {
+                copy_prop::propagate_copies(method);
+            }
+            for method in program.methods.values_mut() {
+                dead_code::eliminate_dead_code(method);
+            }
+        }
     }
-    crate::utils::show_graphviz(&program.methods.get("main").unwrap().dump_graphviz());
+    show_graphviz(&program.methods.values().next().unwrap().dump_graphviz());
     // let mut ls = vec![];
     // for (name, method) in program.methods.iter() {
     //     // println!("{}:", name);
