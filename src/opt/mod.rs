@@ -159,7 +159,6 @@ pub fn optimize(mut program: Program, optimizations: &[Optimization]) -> Program
             Optimization::ConstantFolding,
             // Optimization::ArraySplitting,
             Optimization::FunctionInlining,
-            Optimization::GVNPRE,
         ]);
     }
 

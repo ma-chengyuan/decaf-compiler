@@ -698,6 +698,7 @@ pub mod gvnpre {
         // println! {"leaders: \n{:?}\n", leaders};
         // println! {"value_table: \n{:?}\n", value_table};
 
-        perform_eliminate(method, &mut leaders, &mut value_table)
+        perform_eliminate(method, &mut leaders, &mut value_table);
+        println!("Finished perform_gvnpre");
     }
 }
