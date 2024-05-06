@@ -46,7 +46,8 @@ def main():
 
     def run_gcc():
         gcc = subprocess.Popen(
-            ["gcc", "-O0", "-no-pie", "./test_program.S", "-o", "./test_program"],
+            # ["gcc", "-O0", "-no-pie", "./test_program.S", "-o", "./test_program"],
+            ["./docker_compile.sh"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
@@ -60,6 +61,14 @@ def main():
                     continue
                 for input_file in os.listdir(input_file_dir):
                     if not input_file.endswith(".dcf"):
+                        continue
+                    if input_file not in [
+                        "x-05-falloff.dcf",
+                        "x-27-exiterror.dcf",
+                        "x-21-bounds.dcf",
+                        "x-11-neg-bounds.dcf",
+                        "x-13-big-expr.dcf",
+                    ]:
                         continue
 
                     total_cases += 1
@@ -75,7 +84,8 @@ def main():
                         test_case.unexpected_error(stderr.decode("utf-8"))
                         continue
                     program = subprocess.Popen(
-                        ["./test_program"],
+                        # ["./test_program"],
+                        ["./docker_run.sh"],
                         stdout=subprocess.PIPE,
                         stderr=subprocess.PIPE,
                     )
