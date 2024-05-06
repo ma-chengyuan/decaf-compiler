@@ -58,14 +58,18 @@ impl<'a> RegAllocator<'a> {
                 live.extend(live_succ.iter().cloned());
             }
             for phi in method.phis(succ) {
+                live.remove(&phi);
+            }
+        });
+        for_each_successor(method, block_ref, |succ| {
+            for phi in method.phis(succ) {
                 let Inst::Phi(map) = method.inst(phi) else {
                     unreachable!();
                 };
-                live.remove(&phi);
-                let var = map[&block_ref];
-                live.insert(var);
+                live.insert(map[&block_ref]);
             }
         });
+
         self.live_at
             .insert(ProgPt::AfterTerm(block_ref), live.clone());
         let term = &mut method.block_mut(block_ref).term;
@@ -143,7 +147,7 @@ impl<'a> RegAllocator<'a> {
                         && self.l.nm_args.is_materialized(*inst_ref, *arg_ref)
                     {
                         if let Some(reg) = self.reg.get(arg_ref) {
-                            // println!("  freeing register {} from {}", reg, inst);
+                            // println!("  freeing register {}({}) from {}", reg, arg_ref, inst_ref);
                             used.remove(reg);
                             free.insert(*reg);
                         }

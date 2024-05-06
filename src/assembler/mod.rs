@@ -29,6 +29,8 @@ use self::{
     term_nm::TerminatorNonMaterializer,
 };
 
+#[cfg(feature = "ilp")]
+pub mod coalesce;
 pub mod imm_nm;
 pub mod par_copy;
 pub mod regalloc;
@@ -184,16 +186,18 @@ impl Assembler {
         }
 
         for method in self.program.methods.clone().values() {
-            // crate::utils::show_graphviz(&method.dump_graphviz());
             let mut lowered = LoweredMethod::new(method);
             ImmediateNonMaterializer::new(&mut lowered).run();
             TerminatorNonMaterializer::new(&mut lowered).run();
             let max_reg = REGS.len();
             // For debugging. Smaller max_reg pushes the spiller to limit where
             // more bugs are likely to be found.
-            // let max_reg = 7;
+            // let max_reg = 4;
             Spiller::new(&self.program, &mut lowered, max_reg).spill();
             RegAllocator::new(&self.program, &mut lowered).allocate();
+            if cfg!(feature = "ilp") {
+                coalesce::Coalescer::new(&lowered).solve_and_apply(&mut lowered);
+            }
             MethodAssembler::new(self, &lowered).assemble_method();
         }
 
@@ -303,6 +307,7 @@ pub struct MethodAssembler<'a> {
     stack_slot_to_offset: HashMap<StackSlotRef, i64>,
     tainted_callee_saved_regs: BTreeSet<&'static str>,
     pending_bounds_check: BTreeSet<PendingBoundsCheck>,
+    arg_loading_insts: HashSet<InstRef>,
 }
 
 impl<'a> MethodAssembler<'a> {
@@ -314,6 +319,7 @@ impl<'a> MethodAssembler<'a> {
             stack_slot_to_offset: HashMap::new(),
             pending_bounds_check: BTreeSet::new(),
             tainted_callee_saved_regs: BTreeSet::new(),
+            arg_loading_insts: HashSet::new(),
             regs: REGS.clone(),
             l,
         }
@@ -350,8 +356,54 @@ impl<'a> MethodAssembler<'a> {
     fn emit_prologue(&mut self) {
         // Compute stack spaces
         let mut stack_space = 0i64;
-        // Everything has a home on the stack -- for now?
-        for (stack_slot_ref, stack_slot) in self.l.method.iter_slack_slots() {
+        let n_args = self.l.method.params.len();
+
+        // In our IR, the first n_args slots are reserved for arguments.
+        // If we stick to this convention, this means we'll have to move all
+        // arguments from the registers to the stack at in the prologue. This is
+        // slow. On the other hand, the SSA-converted IR should have already
+        // placed all argument-loading instructions at the beginning of the
+        // method. If we detect that this is the case, we can skip the slow part
+        // and attempt direct register-to-register moves.
+        let mut fast_args = true;
+
+        // First, identify the argument-loading instructions
+        let n_reg_args = n_args.min(6);
+        for inst_ref in self.l.method.block(self.l.method.entry).insts.iter() {
+            match self.l.method.inst(*inst_ref) {
+                Inst::Load(Address::Local(stack_slot)) if stack_slot.0 < n_reg_args => {
+                    self.arg_loading_insts.insert(*inst_ref);
+                }
+                _ => break,
+            }
+        }
+        // Then, make sure that these stack slots are not used in any other way.
+        for (inst_ref, inst) in self.l.method.iter_insts() {
+            if self.arg_loading_insts.contains(&inst_ref) {
+                continue;
+            }
+            if matches!(
+                inst,
+                Inst::Load(Address::Local(stack_slot)) | Inst::Store { addr: Address::Local(stack_slot), .. }
+                if stack_slot.0 < n_reg_args
+            ) {
+                fast_args = false;
+                self.arg_loading_insts.clear();
+                break;
+            }
+        }
+
+        for (i, (stack_slot_ref, stack_slot)) in self.l.method.iter_slack_slots().enumerate() {
+            if i < n_args && i >= 6 {
+                // Arguments 6 and above are on the stack already. They will be taken care of later.
+                continue;
+            }
+            if fast_args && i < n_reg_args {
+                // In the fast path, we can directly move the arguments from the
+                // argument registers to the stack slots. No need to allocate
+                // stack space for them.
+                continue;
+            }
             stack_space += stack_slot.ty.size() as i64;
             self.stack_slot_to_offset
                 .insert(stack_slot_ref, -stack_space);
@@ -387,30 +439,46 @@ impl<'a> MethodAssembler<'a> {
         }
         pushes.into_iter().for_each(|push| self.emit_code(push));
 
-        {
-            let n_args = self.l.method.params.len();
-            for (arg_idx, arg_slot_iter) in self
-                .l
-                .method
-                .iter_slack_slots()
-                .enumerate()
-                .take(n_args)
-                .take(6)
-            {
+        if fast_args {
+            let mut par_copies = HashSet::new();
+            let mut ser_copies = Vec::new();
+            // All argument loading instructions must have results in distinct
+            // registers (for those with registers assigned). This is because
+            // all live arguments must be live at the end of the argument
+            // loading sequence.
+            for inst_ref in &self.arg_loading_insts {
+                if let Some(dst_reg_id) = self.l.reg.get(inst_ref) {
+                    // If the result of an argument-loading instruction is
+                    // assigned a register.
+                    let dst_reg = self.regs[*dst_reg_id];
+                    let src_reg = match self.l.method.inst(*inst_ref) {
+                        Inst::Load(Address::Local(stack_slot)) => ARG_REGS[stack_slot.0],
+                        _ => unreachable!(),
+                    };
+                    if let Some(src_reg_id) = self.regs.iter().position(|&r| r == src_reg) {
+                        par_copies.insert((src_reg_id, *dst_reg_id));
+                    } else {
+                        ser_copies.push((src_reg, dst_reg));
+                    }
+                }
+            }
+            self.emit_par_reg_copies(par_copies);
+            for (src, dst) in ser_copies {
+                self.emit_code(format!("movq {}, {}", src, dst));
+            }
+        } else {
+            let method = &self.l.method;
+            for (arg_idx, arg_slot_iter) in method.iter_slack_slots().enumerate().take(n_reg_args) {
                 self.emit_code(format!(
                     "movq {}, {}(%rbp)",
                     ARG_REGS[arg_idx], self.stack_slot_to_offset[&arg_slot_iter.0]
                 ));
             }
-            let mut stack_offset = 16; // return address is 8 bytes. saved rbp is also 8 bytes.
-            for (arg_slot_ref, arg_slot) in self.l.method.iter_slack_slots().take(n_args).skip(6) {
-                self.emit_code(format!("movq {}(%rbp), %rax", stack_offset));
-                stack_offset += arg_slot.ty.size() as i64;
-                self.emit_code(format!(
-                    "movq %rax, {}(%rbp)",
-                    self.stack_slot_to_offset[&arg_slot_ref]
-                ));
-            }
+        }
+        let mut stack_offset = 16; // return address is 8 bytes. saved rbp is also 8 bytes.
+        for (arg_slot_ref, arg_slot) in self.l.method.iter_slack_slots().take(n_args).skip(6) {
+            self.stack_slot_to_offset.insert(arg_slot_ref, stack_offset);
+            stack_offset += arg_slot.ty.size() as i64;
         }
     }
 
@@ -591,6 +659,11 @@ impl<'a> MethodAssembler<'a> {
             self.emit_block_label(block_ref);
             let insts = &self.l.method.block(block_ref).insts;
             for (i, inst_ref) in insts.iter().enumerate() {
+                if self.arg_loading_insts.contains(inst_ref) {
+                    // Skip argument loading instructions. They have been
+                    // handled by the prologue.
+                    continue;
+                }
                 self.emit_inst_annotation(*inst_ref);
                 let inst = self.l.method.inst(*inst_ref);
                 if !inst.has_side_effects() && !self.l.reg.contains_key(inst_ref) {
@@ -937,7 +1010,8 @@ impl<'a> MethodAssembler<'a> {
         }
 
         let mut par_copies = HashSet::new();
-        let mut ser_copies = vec![];
+        let mut pre_ser_copies = vec![];
+        let mut post_ser_copies = vec![];
         for (arg_idx, arg_ref) in args.iter().enumerate().take(6) {
             let arg = self.arg(inst_ref, *arg_ref);
             let dst_reg = ARG_REGS[arg_idx];
@@ -947,17 +1021,30 @@ impl<'a> MethodAssembler<'a> {
                         let arg_reg_idx = self.regs.iter().position(|r| *r == arg_reg).unwrap();
                         par_copies.insert((arg_reg_idx, dst_reg_idx));
                     } else {
-                        ser_copies.push((arg, dst_reg));
+                        // arg_reg is used for argument passing, but the
+                        // destination register is not used by our register
+                        // allocator. In this case the copy should be arranged
+                        // before the parallel copy sequence so the value of
+                        // arg_reg is not overwritten. Overwriting dst_reg is
+                        // fine, because it's not used by our allocator.
+                        pre_ser_copies.push((arg, dst_reg));
                     }
                 }
-                _ => ser_copies.push((arg, dst_reg)),
+                // An immediate, a memory operand, or a non-argument register.
+                // They will not be overwritten by the parallel copy sequence
+                // anyways. So we arrange them to be copied after the parallel
+                // copy sequence.
+                _ => post_ser_copies.push((arg, dst_reg)),
             }
+        }
+        for (arg, dst_reg) in pre_ser_copies {
+            self.emit_code(format!("movq {}, {}", arg, dst_reg,));
         }
         if !par_copies.is_empty() {
             self.emit_code(format!("# Parallel argument copy: {:?}", par_copies));
             self.emit_par_reg_copies(par_copies);
         }
-        for (arg, dst_reg) in ser_copies {
+        for (arg, dst_reg) in post_ser_copies {
             self.emit_code(format!("movq {}, {}", arg, dst_reg,));
         }
         self.emit_code(format!("call {}", callee_name));

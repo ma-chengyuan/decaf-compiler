@@ -107,9 +107,11 @@ def main():
             else:
                 passed_cases += 1
                 test_case.expected_pass(stdout.decode("utf-8"))
+                print(compiler_stdout.decode("utf-8"))
 
     print(f"Passed {passed_cases}/{total_cases} tests")
 
+    # return
     if passed_cases == total_cases and shutil.which("hyperfine"):
         for test_suite in ["../public-tests"]:
             input_file_dir = Path(f"{test_suite}/derby/input")

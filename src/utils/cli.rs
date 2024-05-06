@@ -26,6 +26,10 @@ pub enum Optimization {
     DeadCodeElimination,
     #[clap(name = "cse")]
     CommonSubexpressionElimination,
+    #[clap(name = "cf")]
+    ConstantFolding,
+    #[clap(name = "as")]
+    ArraySplitting,
     #[clap(name = "gvnpre")]
     GVNPRE,
     #[clap(name = "all")]
