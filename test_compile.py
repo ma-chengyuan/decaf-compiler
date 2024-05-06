@@ -2,6 +2,7 @@ import difflib
 import os
 import subprocess
 from pathlib import Path
+import platform
 
 from test_util import TestCase
 
@@ -45,8 +46,11 @@ def main():
         return proc
 
     def run_gcc():
+        command = ["gcc", "-O0", "-no-pie", "./test_program.S", "-o", "./test_program"]
+        if "macOS" in platform.platform():
+            command = ["./docker_compile.sh"]
         gcc = subprocess.Popen(
-            ["gcc", "-O0", "-no-pie", "./test_program.S", "-o", "./test_program"],
+            command,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
@@ -75,7 +79,11 @@ def main():
                         test_case.unexpected_error(stderr.decode("utf-8"))
                         continue
                     program = subprocess.Popen(
-                        ["./test_program"],
+                        [
+                            "./docker_run.sh"
+                            if "macOS" in platform.platform()
+                            else "./test_program"
+                        ],
                         stdout=subprocess.PIPE,
                         stderr=subprocess.PIPE,
                     )

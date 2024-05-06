@@ -12,6 +12,7 @@ pub mod copy_prop;
 pub mod cse;
 pub mod dead_code;
 pub mod dom;
+pub mod function_inlining;
 pub mod gvnpre;
 pub mod ssa;
 
@@ -160,6 +161,8 @@ pub fn optimize(mut program: Program, optimizations: &[Optimization]) -> Program
             Optimization::GVNPRE,
         ]);
     }
+
+    function_inlining::inline_functions(&mut program);
 
     // Construct SSA form
     for method in program.methods.values_mut() {
