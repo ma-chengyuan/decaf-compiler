@@ -30,6 +30,8 @@ pub enum Optimization {
     ConstantFolding,
     #[clap(name = "as")]
     ArraySplitting,
+    #[clap(name = "gvnpre")]
+    GVNPRE,
     #[clap(name = "all")]
     All,
 }

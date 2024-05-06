@@ -12,6 +12,7 @@ pub mod copy_prop;
 pub mod cse;
 pub mod dead_code;
 pub mod dom;
+pub mod gvnpre;
 pub mod ssa;
 
 // Common graph algorithms for control flow graphs.
@@ -155,6 +156,7 @@ pub fn optimize(mut program: Program, optimizations: &[Optimization]) -> Program
             Optimization::CommonSubexpressionElimination,
             Optimization::ConstantFolding,
             Optimization::ArraySplitting,
+            Optimization::GVNPRE,
         ]);
     }
 
@@ -169,32 +171,51 @@ pub fn optimize(mut program: Program, optimizations: &[Optimization]) -> Program
             for method in program.methods.values_mut() {
                 constant_folding::fold_constants(method);
             }
-        }
 
-        // Copy propagation
-        if optimizations.contains(&Optimization::CopyPropagation) {
-            for method in program.methods.values_mut() {
-                copy_prop::propagate_copies(method);
+            // Copy propagation
+            if optimizations.contains(&Optimization::CopyPropagation) {
+                for method in program.methods.values_mut() {
+                    copy_prop::propagate_copies(method);
+                }
             }
-        }
 
-        // Common subexpression elimination
-        if optimizations.contains(&Optimization::CommonSubexpressionElimination) {
-            for method in program.methods.values_mut() {
-                cse::eliminate_common_subexpressions(method);
+            // Common subexpression elimination
+            if optimizations.contains(&Optimization::CommonSubexpressionElimination) {
+                for method in program.methods.values_mut() {
+                    cse::eliminate_common_subexpressions(method);
+                }
             }
-        }
 
-        // Dead code elimination
-        if optimizations.contains(&Optimization::DeadCodeElimination) {
-            for method in program.methods.values_mut() {
-                dead_code::eliminate_dead_code(method);
+            // Dead code elimination
+            if optimizations.contains(&Optimization::DeadCodeElimination) {
+                for method in program.methods.values_mut() {
+                    dead_code::eliminate_dead_code(method);
+                }
             }
         }
 
         if optimizations.contains(&Optimization::ArraySplitting) {
             for method in program.methods.values_mut() {
                 array_split::split_arrays(method);
+            }
+        }
+    }
+
+    if optimizations.contains(&Optimization::GVNPRE) {
+        for method in program.methods.values_mut() {
+            gvnpre::gvnpre::perform_gvnpre(method);
+        }
+        for _ in 0..3 { // IDK HOW THIS WORKSSSSS
+        if optimizations.contains(&Optimization::ConstantFolding) {
+            for method in program.methods.values_mut() {
+                constant_folding::fold_constants(method);
+            }
+
+            // Copy propagation
+            if optimizations.contains(&Optimization::CopyPropagation) {
+                for method in program.methods.values_mut() {
+                    copy_prop::propagate_copies(method);
+                }
             }
         }
     }
