@@ -28,6 +28,8 @@ pub enum Optimization {
     CommonSubexpressionElimination,
     #[clap(name = "cf")]
     ConstantFolding,
+    #[clap(name = "as")]
+    ArraySplitting,
     #[clap(name = "all")]
     All,
 }

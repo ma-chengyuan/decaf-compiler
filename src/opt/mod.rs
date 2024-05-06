@@ -6,6 +6,7 @@ use crate::{
     utils::cli::Optimization,
 };
 
+pub mod array_split;
 pub mod constant_folding;
 pub mod copy_prop;
 pub mod cse;
@@ -153,6 +154,7 @@ pub fn optimize(mut program: Program, optimizations: &[Optimization]) -> Program
             Optimization::DeadCodeElimination,
             Optimization::CommonSubexpressionElimination,
             Optimization::ConstantFolding,
+            Optimization::ArraySplitting,
         ]);
     }
 
@@ -187,6 +189,12 @@ pub fn optimize(mut program: Program, optimizations: &[Optimization]) -> Program
         if optimizations.contains(&Optimization::DeadCodeElimination) {
             for method in program.methods.values_mut() {
                 dead_code::eliminate_dead_code(method);
+            }
+        }
+
+        if optimizations.contains(&Optimization::ArraySplitting) {
+            for method in program.methods.values_mut() {
+                array_split::split_arrays(method);
             }
         }
     }
