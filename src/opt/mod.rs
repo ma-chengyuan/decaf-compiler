@@ -6,8 +6,6 @@ use crate::{
     utils::cli::Optimization,
 };
 
-use self::ssa::destruct_ssa;
-
 pub mod constant_folding;
 pub mod copy_prop;
 pub mod cse;
@@ -203,10 +201,10 @@ pub fn optimize(mut program: Program, optimizations: &[Optimization]) -> Program
     // println!("{}", output);
 
     // Destruct SSA form
-    program.methods = program
-        .methods
-        .iter()
-        .map(|(name, method)| (name.clone(), destruct_ssa(&program, method)))
-        .collect();
+    // program.methods = program
+    //     .methods
+    //     .iter()
+    //     .map(|(name, method)| (name.clone(), destruct_ssa(&program, method)))
+    //     .collect();
     program
 }

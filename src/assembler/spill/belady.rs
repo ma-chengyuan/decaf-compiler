@@ -184,8 +184,16 @@ impl Spiller<'_> {
             }
             for inst_ref in self.l.method.block(succ).insts.iter() {
                 match self.l.method.inst(*inst_ref) {
+                    Inst::Phi(_) => h.remove(inst_ref),
+                    Inst::PhiMem { .. } => continue,
+                    _ => break,
+                }
+            }
+        });
+        for_each_successor(&self.l.method, block_ref, |succ| {
+            for inst_ref in self.l.method.block(succ).insts.iter() {
+                match self.l.method.inst(*inst_ref) {
                     Inst::Phi(map) => {
-                        h.remove(inst_ref);
                         // Phi function at the successor block means that the
                         // value is immediately used
                         h.insert(map[&block_ref], 0);
