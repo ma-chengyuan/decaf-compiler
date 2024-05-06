@@ -6,7 +6,11 @@ pub mod gvnpre {
         },
         opt::dom::compute_dominance,
     };
-    use std::collections::{HashMap, HashSet, LinkedList};
+    use std::{
+        collections::{HashMap, HashSet, LinkedList},
+        hash::Hash,
+        path::Ancestors,
+    };
 
     #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
     pub struct Value(pub usize);
@@ -37,7 +41,22 @@ pub mod gvnpre {
                 Expression::Copy(src) => vec![src.clone()],
                 Expression::LoadConst(_) => vec![],
                 Expression::Reg(_) => vec![],
-                Expression::Phi(phi) => vec![],
+                Expression::Phi(_) => vec![],
+            }
+        }
+
+        fn is_simple(&self) -> bool {
+            match self {
+                Expression::Add(..) => false,
+                Expression::Sub(..) => false,
+                Expression::Mul(..) => false,
+                Expression::Div(..) => false,
+                Expression::Neg(..) => false,
+                Expression::Not(..) => false,
+                Expression::Copy(..) => false,
+                Expression::LoadConst(_) => false,
+                Expression::Reg(_) => true,
+                Expression::Phi(_) => false,
             }
         }
     }
@@ -85,15 +104,23 @@ pub mod gvnpre {
     // Can make value table arbitrarily intelligent, but for now this is good enough
     #[derive(Clone, Debug)]
     pub struct ValueTable {
-        values: Vec<Expression>,
+        values: LinkedList<(Expression, Value)>,
+        _next_value: usize,
         map: HashMap<InstRef, Value>,
     }
     impl ValueTable {
         pub fn new() -> Self {
             Self {
-                values: vec![],
+                values: LinkedList::new(),
+                _next_value: 0,
                 map: HashMap::new(),
             }
+        }
+
+        pub fn next_value(&mut self) -> Value {
+            let ans = Value(self._next_value);
+            self._next_value += 1;
+            ans
         }
 
         pub fn insert(&mut self, inst: InstRef, value: Expression) -> (Value, bool) {
@@ -109,16 +136,19 @@ pub mod gvnpre {
 
         pub fn lookup_expr(&mut self, expr: &Expression) -> (Value, bool) {
             if let Expression::Copy(src) = expr {
-               if src.0 < self.values.len() {
-                   return (src.clone(), false);
-               }
+                debug_assert!(src.0 < self._next_value);
+                return (src.clone(), false);
             }
-            match self.values.iter().position(|v| v == expr) {
-                Some(index) => (Value(index), false),
+            match self
+                .values
+                .iter()
+                .find_map(|(k, v)| if k == expr { Some(v) } else { None })
+            {
+                Some(index) => (index.clone(), false),
                 None => {
-                    let ans = self.values.len();
-                    self.values.push(expr.clone());
-                    (Value(ans), true)
+                    let ans = self.next_value();
+                    self.values.push_back((expr.clone(), ans.clone()));
+                    (ans, true)
                 }
             }
         }
@@ -163,8 +193,25 @@ pub mod gvnpre {
         pub fn get_value(&self, inst: InstRef) -> Option<&Value> {
             self.map.get(&inst)
         }
-        pub fn get_expr(&mut self, value: Value) -> Option<&Expression> {
-            self.values.get(value.0)
+
+        pub fn tie_expr(&mut self, expr: Expression, value: Value) {
+            if let Some(index) =
+                self.values
+                    .iter()
+                    .find_map(|(k, v)| if *k == expr { Some(v) } else { None })
+            {
+                assert!(*index == value);
+            } else {
+                self.values.push_back((expr.clone(), value.clone()));
+            }
+        }
+
+        pub fn tie_inst(&mut self, inst: InstRef, value: Value) {
+            if let Some(val) = self.map.get(&inst) {
+                assert!(*val == value);
+            } else {
+                self.map.insert(inst, value);
+            }
         }
     }
 
@@ -217,17 +264,16 @@ pub mod gvnpre {
 
     fn phi_translate(
         block: BlockRef,
-        phi_gen: LinkedList<(Value, Expression)>,
+        phi_gen: &LinkedList<(Value, Expression)>,
         value_table: &mut ValueTable,
     ) -> LinkedList<(Value, Expression)> {
         let mut result = LinkedList::new();
         for (value, expr) in phi_gen.iter() {
             if let Expression::Phi(phi) = expr {
                 let translated_value = phi[&block];
-                result.push_back((
-                    value.clone(),
-                    Expression::new_copy(value_table.lookup_inst(translated_value)),
-                ));
+                let new_expr = Expression::new_copy(value_table.lookup_inst(translated_value));
+                let (new_val, _) = value_table.lookup_expr(&new_expr);
+                result.push_back((new_val, new_expr));
             } else {
                 result.push_back((value.clone(), expr.clone()));
             }
@@ -251,7 +297,7 @@ pub mod gvnpre {
         if succs.len() == 1 {
             // Phi translate and propagate
             let succ = succs[0];
-            result = phi_translate(block.clone(), antic_in[succ.0].clone(), value_table);
+            result = phi_translate(block.clone(), &antic_in[succ.0], value_table);
         } else if succs.len() > 1 {
             // Compute intersection of exprs. Assert no children have phi nodes.
             let mut exprs = antic_in[succs[0].0].clone();
@@ -420,53 +466,10 @@ pub mod gvnpre {
             Expression::Not(operand) => Inst::Not(leader_map[&operand]),
             Expression::Copy(src) => Inst::Copy(leader_map[&src]),
             Expression::LoadConst(value) => Inst::LoadConst(value),
-            _ => unreachable!(),
+            Expression::Reg(_) => panic!("No instruction for Reg value"),
+            Expression::Phi(_) => panic!("No instruction for Phi value"),
         }
     }
-
-
-    fn block_insert(
-        method: &mut Method,
-        block: BlockRef,
-        preds: &Vec<Vec<BlockRef>>,
-        succs: &Vec<Vec<BlockRef>>,
-        leaders: &mut LeaderSet,
-        antic_in: &mut AntileaderSet,
-        value_table: &mut ValueTable,
-    ) -> bool {
-        if preds[block.0].len() == 1 {
-            return true; // Propagate to parent
-        } else if preds[block.0].len() > 1 {
-            for (value, expr) in antic_in[block.0].iter() {
-                let hoist = preds[block.0]
-                    .iter()
-                    .any(|succ| leaders[succ.0].contains_key(&value));
-                if hoist {
-                    // 1. Insert the expression into each predecessor
-                    // 2. Create a new temporary in the current block -- set it to PHI(all expr in each predecessor)
-                    // 3. Set leader of value in current block to new temporary
-
-                    let mut phi_map = HashMap::new();
-                    for pred in preds[block.0].iter() {
-                        if let Some(inst) = leaders[pred.0].get(&value) {
-                            phi_map.insert(pred.clone(), inst.clone());
-                        } else {
-                            let inst = expr_to_inst(expr.clone(), &leaders[pred.0]);
-                            let instref = method.next_inst(pred.clone(), inst.clone());
-                            phi_map.insert(pred.clone(), instref);
-                            value_table.maybe_insert_inst(instref, &inst);
-                        }
-                    }
-                    let inst = Inst::Phi(phi_map);
-                    let instref = method.next_inst_prepend(block, inst.clone());
-                    leaders[block.0].insert(value.clone(), instref);
-                    value_table.maybe_insert_inst(instref, &inst);
-                }
-            }
-        }
-        false
-    }
-
 
     fn perform_insert(
         preds: &Vec<Vec<BlockRef>>,
@@ -477,27 +480,154 @@ pub mod gvnpre {
         antic_in: &mut AntileaderSet,
     ) {
         let num_blocks = method.n_blocks();
-        let mut block_queue: Vec<BlockRef> = vec![];
-        for block in method.iter_blocks() {
-            block_queue.push(block.0);
-        }
-        let mut in_queue: Vec<bool> = vec![true; num_blocks];
+        let dom = compute_dominance(method);
+        let dom_tree = dom.dominator_tree();
 
-        let mut qidx = 0;
-        while qidx < block_queue.len() {
-            let block = block_queue[qidx];
-            in_queue[block.0] = false;
-            qidx += 1;
+        fn insert_recursive(
+            block: BlockRef,
+            dom_tree: &Vec<Vec<BlockRef>>,
+            preds: &Vec<Vec<BlockRef>>,
+            succs: &Vec<Vec<BlockRef>>,
+            method: &mut Method,
+            value_table: &mut ValueTable,
+            leaders: &mut LeaderSet,
+            added_leaders: &mut Vec<HashMap<Value, InstRef>>,
+            antic_in: &mut AntileaderSet,
+            changed: &mut bool,
+        ) {
+            for (value, inst) in added_leaders[block.0].iter() {
+                // Override
+                leaders[block.0].insert(value.clone(), inst.clone());
+            }
 
-            let changed = block_insert(method, block, preds, succs, leaders, antic_in, value_table);
+            if preds[block.0].len() > 1 {
+                let translated_values = preds[block.0]
+                    .iter()
+                    .map(|pred| {
+                        (
+                            pred.clone(),
+                            phi_translate(*pred, &antic_in[block.0], value_table),
+                        )
+                    })
+                    .collect::<Vec<(BlockRef, LinkedList<(Value, Expression)>)>>();
+                let to_hoist = translated_values
+                    .iter()
+                    .flat_map(|(pred, ll)| {
+                        ll.iter().zip(&antic_in[block.0]).enumerate().filter_map(
+                            |(i, ((val, expr), (orig_val, _)))| {
+                                if leaders[pred.0].contains_key(&val)
+                                    && !expr.is_simple()
+                                    && !added_leaders[pred.0].contains_key(&orig_val)
+                                {
+                                    Some(i)
+                                } else {
+                                    None
+                                }
+                            },
+                        )
+                    })
+                    .collect::<HashSet<usize>>();
 
-            if changed {
-                for pred in preds[block.0].iter() {
-                    if !in_queue[pred.0] {
-                        block_queue.push(pred.clone());
-                        in_queue[pred.0] = true;
+                let mut new_phis = vec![Vec::new(); to_hoist.len()];
+                for (pred, exprs) in translated_values.into_iter() {
+                    let mut i = 0;
+                    for (k, (val, expr)) in exprs.into_iter().enumerate() {
+                        if !to_hoist.contains(&k) {
+                            continue;
+                        }
+                        let leaders = &mut leaders[pred.0];
+                        let instref = match leaders.get(&val) {
+                            Some(inst) => *inst,
+                            None => {
+                                let inst = expr_to_inst(expr.clone(), leaders);
+                                let instref = method.next_inst(pred.clone(), inst.clone());
+                                let (value, _, _) = value_table.maybe_insert_inst(instref, &inst);
+                                assert!(
+                                    !leaders.contains_key(&value),
+                                    "Leader set unexpectedly contains the value."
+                                );
+                                leaders.insert(value.clone(), instref);
+                                added_leaders[pred.0].insert(value.clone(), instref);
+                                instref
+                            }
+                        };
+
+                        new_phis[i].push(instref);
+                        i += 1;
                     }
                 }
+                debug_assert_eq!(new_phis.len(), to_hoist.len());
+
+                let phis_to_insert = new_phis
+                    .into_iter()
+                    .map(|phi| {
+                        Inst::Phi(
+                            phi.into_iter()
+                                .zip(preds[block.0].iter())
+                                .map(|(instref, pred)| (pred.clone(), instref))
+                                .collect(),
+                        )
+                    })
+                    .collect::<Vec<Inst>>();
+
+                let mut i = 0;
+                for (k, (val, _)) in antic_in[block.0].iter().enumerate() {
+                    if !to_hoist.contains(&k) {
+                        continue;
+                    }
+                    let instref = method.next_inst_prepend(block, phis_to_insert[i].clone());
+                    let Inst::Phi(phi) = phis_to_insert[i].clone() else {
+                        unreachable!()
+                    };
+                    value_table.tie_expr(Expression::new_phi(phi), val.clone());
+                    value_table.tie_inst(instref, val.clone());
+                    leaders[block.0].insert(val.clone(), instref);
+                    added_leaders[block.0].insert(val.clone(), instref);
+                    i += 1;
+                }
+            }
+
+            for child in dom_tree[block.0].iter() {
+                added_leaders[child.0] = added_leaders[block.0].clone();
+                insert_recursive(
+                    child.clone(),
+                    dom_tree,
+                    preds,
+                    succs,
+                    method,
+                    value_table,
+                    leaders,
+                    added_leaders,
+                    antic_in,
+                    changed,
+                );
+            }
+        }
+
+        let mut rounds = 0;
+        loop {
+            if rounds > 10 {
+                panic!("Too many rounds. Should have converged in at most 3 rounds");
+            }
+            rounds += 1;
+            let mut changed = false;
+
+            let mut added_leaders: Vec<HashMap<Value, InstRef>> = vec![HashMap::new(); num_blocks];
+            insert_recursive(
+                method.entry,
+                &dom_tree,
+                preds,
+                succs,
+                method,
+                value_table,
+                leaders,
+                &mut added_leaders,
+                antic_in,
+                &mut changed,
+            );
+
+            if !changed {
+                break;
             }
         }
     }
@@ -527,14 +657,22 @@ pub mod gvnpre {
     }
 
     pub fn perform_gvnpre(method: &mut Method) {
-        let (preds, succs, mut leaders, mut antic_in, phi_gen, mut value_table) = build_sets(method);
+        let (preds, succs, mut leaders, mut antic_in, phi_gen, mut value_table) =
+            build_sets(method);
 
         println! {"leaders: \n{:?}\n", leaders};
         println! {"antic_in: \n{:?}\n", antic_in};
         println! {"phi_gen: \n{:?}\n", phi_gen};
         println! {"value_table: \n{:?}\n", value_table};
 
-        perform_insert(&preds, &succs, method, &mut value_table, &mut leaders, &mut antic_in);
+        perform_insert(
+            &preds,
+            &succs,
+            method,
+            &mut value_table,
+            &mut leaders,
+            &mut antic_in,
+        );
 
         println! {"After insertion"};
         println! {"leaders: \n{:?}\n", leaders};

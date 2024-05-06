@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use crate::{
     inter::ir::{BlockRef, Inst, Method, Program, Terminator},
     opt::ssa::construct_ssa,
-    utils::cli::Optimization,
+    utils::{cli::Optimization, show_graphviz},
 };
 
 pub mod array_split;
