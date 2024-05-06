@@ -177,6 +177,7 @@ pub fn optimize(mut program: Program, optimizations: &[Optimization]) -> Program
             for method in program.methods.values_mut() {
                 constant_folding::fold_constants(method);
             }
+        }
 
         // Copy propagation
         if optimizations.contains(&Optimization::CopyPropagation) {
@@ -192,11 +193,10 @@ pub fn optimize(mut program: Program, optimizations: &[Optimization]) -> Program
             }
         }
 
-            // Dead code elimination
-            if optimizations.contains(&Optimization::DeadCodeElimination) {
-                for method in program.methods.values_mut() {
-                    dead_code::eliminate_dead_code(method);
-                }
+        // Dead code elimination
+        if optimizations.contains(&Optimization::DeadCodeElimination) {
+            for method in program.methods.values_mut() {
+                dead_code::eliminate_dead_code(method);
             }
         }
 
@@ -211,22 +211,23 @@ pub fn optimize(mut program: Program, optimizations: &[Optimization]) -> Program
         for method in program.methods.values_mut() {
             gvnpre::gvnpre::perform_gvnpre(method);
         }
-        for _ in 0..3 { // IDK HOW THIS WORKSSSSS
+        for _ in 0..3 {
+            // IDK HOW THIS WORKSSSSS
             // I don't know how to use propagate_copies and eliminate_dead_code
-        if optimizations.contains(&Optimization::ConstantFolding) {
-            for method in program.methods.values_mut() {
-                constant_folding::fold_constants(method);
+            if optimizations.contains(&Optimization::ConstantFolding) {
+                for method in program.methods.values_mut() {
+                    constant_folding::fold_constants(method);
+                }
             }
-        }
 
             // Copy propagation
             if optimizations.contains(&Optimization::CopyPropagation) {
                 for method in program.methods.values_mut() {
                     copy_prop::propagate_copies(method);
                 }
+            }
         }
     }
-
 
     // let mut ls = vec![];
     // for (name, method) in program.methods.iter() {
