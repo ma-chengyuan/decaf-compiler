@@ -1,4 +1,4 @@
-use im::{HashMap, HashSet};
+use im::HashMap;
 
 use crate::{
     inter::{
@@ -6,7 +6,6 @@ use crate::{
         types::Type,
     },
     parse::ast::Ident,
-    scan::location::{Location, Span},
 };
 
 fn can_inline(method: &Method) -> bool {
@@ -37,7 +36,7 @@ fn can_inline(method: &Method) -> bool {
             }
         }
     }
-    return true;
+    true
 }
 
 pub fn inline_functions(program: &mut Program) {
@@ -100,9 +99,9 @@ pub fn inline_functions(program: &mut Program) {
                     }
 
                     // copy over stack slots
-                    for stack_slot_ref in 0..method_to_copy.n_stack_slots() {
-                        let stack_slot = method_to_copy.stack_slot(StackSlotRef(stack_slot_ref));
-                        new_stack_slot_refs[stack_slot_ref] =
+                    for stack_slot_ref in (0..method_to_copy.n_stack_slots()).map(StackSlotRef) {
+                        let stack_slot = method_to_copy.stack_slot(stack_slot_ref);
+                        new_stack_slot_refs[stack_slot_ref.0] =
                             method.next_stack_slot(stack_slot.ty.clone(), stack_slot.name.clone());
                     }
 
@@ -131,14 +130,14 @@ pub fn inline_functions(program: &mut Program) {
                             let current_term = method.block(new_block_ref).term.clone();
                             method.block_mut(new_block_ref).term = match current_term {
                                 Terminator::Return(return_inst_ref) => {
-                                    if return_inst_ref.is_some() {
+                                    if let Some(return_inst_ref) = return_inst_ref {
                                         method.next_inst(
                                             new_block_ref,
                                             Inst::Store {
                                                 addr: Address::Local(
                                                     return_stack_slot_ref.unwrap(),
                                                 ),
-                                                value: new_inst_refs[return_inst_ref.unwrap().0],
+                                                value: new_inst_refs[return_inst_ref.0],
                                             },
                                         );
                                     }

@@ -30,6 +30,8 @@ pub enum Optimization {
     ConstantFolding,
     #[clap(name = "as")]
     ArraySplitting,
+    #[clap(name = "inline")]
+    FunctionInlining,
     #[clap(name = "all")]
     All,
 }
