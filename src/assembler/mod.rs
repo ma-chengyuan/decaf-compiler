@@ -852,7 +852,7 @@ impl<'a> MethodAssembler<'a> {
                                 ));
                             }
                             (Address::Global(name), AsmArg::Imm(i)) => {
-                                let sym_name = format!("{}.{}", name, i);
+                                let sym_name = format!("{}.{}", name, i).replace('-', "_");
                                 let offset = i * elem_size;
                                 self.emit_code(format!(".set {}, {} + {}", sym_name, name, offset));
                                 // (,1) is a syntactic exception in AT&T syntax
@@ -888,7 +888,7 @@ impl<'a> MethodAssembler<'a> {
                                 ));
                             }
                             (Address::Global(name), AsmArg::Imm(i)) => {
-                                let sym_name = format!("{}.{}", name, i);
+                                let sym_name = format!("{}.{}", name, i).replace('-', "_");
                                 let offset = i * elem_size;
                                 self.emit_code(format!(".set {}, {} + {}", sym_name, name, offset));
                                 self.emit_code(format!("movq {}, {}(,1)", value, sym_name));
@@ -1100,7 +1100,7 @@ impl<'a> MethodAssembler<'a> {
         format!(
             "{}.bound_check_fail.{}.{}.{}",
             &self.name,
-            &index.to_string()[1..], // Remove the % or $ sign
+            &index.to_string()[1..].replace('-', "_"), // Remove the % or $ sign
             length,
             line
         )
