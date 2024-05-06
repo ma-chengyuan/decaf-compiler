@@ -179,6 +179,14 @@ impl Assembler {
         self.code.push(format!("{}:     # {}", label, annotation));
     }
 
+    #[cfg(feature = "ilp")]
+    fn coalesce(l: &mut LoweredMethod) {
+        coalesce::Coalescer::new(l).solve_and_apply(l);
+    }
+
+    #[cfg(not(feature = "ilp"))]
+    fn coalesce(_l: &mut LoweredMethod) {}
+
     pub fn assemble_lowered(&mut self, file_name: &str) -> String {
         // todo: remove the .clone()
         for global in self.program.globals.clone().values() {
@@ -195,9 +203,7 @@ impl Assembler {
             // let max_reg = 4;
             Spiller::new(&self.program, &mut lowered, max_reg).spill();
             RegAllocator::new(&self.program, &mut lowered).allocate();
-            if cfg!(feature = "ilp") {
-                coalesce::Coalescer::new(&lowered).solve_and_apply(&mut lowered);
-            }
+            Self::coalesce(&mut lowered);
             MethodAssembler::new(self, &lowered).assemble_method();
         }
 

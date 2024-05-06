@@ -4,4 +4,5 @@
 
 docker run \
   --mount type=bind,source="$(pwd)",target=/mnt \
-  compilers gcc -O0 -no-pie /mnt/test_program.S -o /mnt/test_program
+  --mount type=bind,source="$(pwd)/../public-tests/derby/lib",target=/derby_lib \
+  compilers gcc -O0 -no-pie /mnt/test_program.S -L/derby_lib -l6035_linux_x86 -o /mnt/test_program

@@ -4,4 +4,5 @@
 
 docker run \
   --mount type=bind,source="$(pwd)",target=/mnt \
-  compilers /mnt/test_program
+  --mount type=bind,source="$(pwd)/../public-tests/derby",target=/derby \
+  compilers /bin/bash -c "cd /derby && ../mnt/test_program"

@@ -1,4 +1,5 @@
 import os
+import platform
 import shutil
 import subprocess
 from pathlib import Path
@@ -46,7 +47,9 @@ def main():
 
     def run_gcc():
         gcc = subprocess.Popen(
-            [
+            ["./docker_compile.sh"]
+            if "macOS" in platform.platform()
+            else [
                 "gcc",
                 "-O0",
                 "-no-pie",
@@ -84,12 +87,19 @@ def main():
             if gcc.returncode != 0:
                 test_case.unexpected_error(stderr.decode("utf-8"))
                 continue
-            program = subprocess.Popen(
-                ["../../compiler/test_program"],
-                cwd="../public-tests/derby/",
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-            )
+            if "macOS" in platform.platform():
+                program = subprocess.Popen(
+                    ["./docker_run.sh"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+            else:
+                program = subprocess.Popen(
+                    ["../../compiler/test_program"],
+                    cwd="../public-tests/derby/",
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
             stdout, stderr = program.communicate()
 
             if program.returncode != 0:

@@ -157,12 +157,15 @@ pub fn optimize(mut program: Program, optimizations: &[Optimization]) -> Program
             Optimization::DeadCodeElimination,
             Optimization::CommonSubexpressionElimination,
             Optimization::ConstantFolding,
-            Optimization::ArraySplitting,
+            // Optimization::ArraySplitting,
+            Optimization::FunctionInlining,
             Optimization::GVNPRE,
         ]);
     }
 
-    function_inlining::inline_functions(&mut program);
+    if optimizations.contains(&Optimization::FunctionInlining) {
+        function_inlining::inline_functions(&mut program);
+    }
 
     // Construct SSA form
     for method in program.methods.values_mut() {
