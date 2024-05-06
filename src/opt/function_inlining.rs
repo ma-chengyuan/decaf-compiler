@@ -11,9 +11,11 @@ use crate::{
 
 fn can_inline(method: &Method) -> bool {
     const MAX_INSTRUCTION_CT: usize = 25;
+    // don't allow too many instructions
     if method.n_insts() > MAX_INSTRUCTION_CT {
         return false;
     }
+    // don't allow recurisve calls
     for (_, inst) in method.iter_insts() {
         if let Inst::Call {
             method: method_name,
@@ -21,7 +23,14 @@ fn can_inline(method: &Method) -> bool {
         } = inst
         {
             if method_name.as_ref() == method.name.inner.as_ref() {
-                // don't allow recurisve calls
+                return false;
+            }
+        }
+    }
+    // don't allow functions that occasionally do not return a value
+    for (_, block) in method.iter_blocks() {
+        if let Terminator::Return(ret_val) = block.term {
+            if ret_val.is_none() {
                 return false;
             }
         }
