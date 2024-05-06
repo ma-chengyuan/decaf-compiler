@@ -122,7 +122,9 @@ def main():
     print(f"Passed {passed_cases}/{total_cases} tests")
 
     # return
-    if passed_cases == total_cases and shutil.which("hyperfine"):
+    if passed_cases == total_cases and (
+        shutil.which("hyperfine") or "macOS" in platform.platform()
+    ):
         for test_suite in ["../public-tests"]:
             input_file_dir = Path(f"{test_suite}/derby/input")
             if not input_file_dir.exists():
@@ -140,10 +142,13 @@ def main():
                 _, stderr = gcc.communicate()
                 assert gcc.returncode == 0
                 print(f"Running hyperfine on {input_file}")
-                benchmark = subprocess.Popen(
-                    ["hyperfine", "--warmup", "5", "../../compiler/test_program"],
-                    cwd="../public-tests/derby/",
-                )
+                if "macOS" in platform.platform():
+                    benchmark = subprocess.Popen(["./docker_run_hyperfine.sh"])
+                else:
+                    benchmark = subprocess.Popen(
+                        ["hyperfine", "--warmup", "5", "../../compiler/test_program"],
+                        cwd="../public-tests/derby/",
+                    )
                 benchmark.communicate()
 
 

@@ -15,17 +15,17 @@ fn can_inline(method: &Method) -> bool {
         return false;
     }
     // don't allow recurisve calls
-    for (_, inst) in method.iter_insts() {
-        if let Inst::Call {
-            method: method_name,
-            ..
-        } = inst
-        {
-            if method_name.as_ref() == method.name.inner.as_ref() {
-                return false;
-            }
-        }
-    }
+    // for (_, inst) in method.iter_insts() {
+    //     if let Inst::Call {
+    //         method: method_name,
+    //         ..
+    //     } = inst
+    //     {
+    //         if method_name.as_ref() == method.name.inner.as_ref() {
+    //             return false;
+    //         }
+    //     }
+    // }
     // don't allow functions that occasionally do not return a value
     if method.return_ty != Type::Void {
         for (_, block) in method.iter_blocks() {
@@ -51,7 +51,8 @@ pub fn inline_functions(program: &mut Program) {
     }
 
     for method in program.methods.values_mut() {
-        for block_ref in 0..method.n_blocks() {
+        let n_blocks = method.n_blocks(); // don't inline more than once
+        for block_ref in 0..n_blocks {
             let block_ref = BlockRef(block_ref);
 
             for inst_ref in method.block(block_ref).insts.clone().into_iter() {
