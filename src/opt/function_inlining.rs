@@ -28,10 +28,12 @@ fn can_inline(method: &Method) -> bool {
         }
     }
     // don't allow functions that occasionally do not return a value
-    for (_, block) in method.iter_blocks() {
-        if let Terminator::Return(ret_val) = block.term {
-            if ret_val.is_none() {
-                return false;
+    if method.return_ty != Type::Void {
+        for (_, block) in method.iter_blocks() {
+            if let Terminator::Return(ret_val) = block.term {
+                if ret_val.is_none() {
+                    return false;
+                }
             }
         }
     }
