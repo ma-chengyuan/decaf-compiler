@@ -29,6 +29,8 @@ use self::{
     term_nm::TerminatorNonMaterializer,
 };
 
+#[cfg(feature = "ilp")]
+pub mod coalesce;
 pub mod imm_nm;
 pub mod par_copy;
 pub mod regalloc;
@@ -184,16 +186,18 @@ impl Assembler {
         }
 
         for method in self.program.methods.clone().values() {
-            // crate::utils::show_graphviz(&method.dump_graphviz());
             let mut lowered = LoweredMethod::new(method);
             ImmediateNonMaterializer::new(&mut lowered).run();
             TerminatorNonMaterializer::new(&mut lowered).run();
             let max_reg = REGS.len();
             // For debugging. Smaller max_reg pushes the spiller to limit where
             // more bugs are likely to be found.
-            // let max_reg = 7;
+            // let max_reg = 4;
             Spiller::new(&self.program, &mut lowered, max_reg).spill();
             RegAllocator::new(&self.program, &mut lowered).allocate();
+            if cfg!(feature = "ilp") {
+                coalesce::Coalescer::new(&lowered).solve_and_apply(&mut lowered);
+            }
             MethodAssembler::new(self, &lowered).assemble_method();
         }
 
@@ -1006,7 +1010,8 @@ impl<'a> MethodAssembler<'a> {
         }
 
         let mut par_copies = HashSet::new();
-        let mut ser_copies = vec![];
+        let mut pre_ser_copies = vec![];
+        let mut post_ser_copies = vec![];
         for (arg_idx, arg_ref) in args.iter().enumerate().take(6) {
             let arg = self.arg(inst_ref, *arg_ref);
             let dst_reg = ARG_REGS[arg_idx];
@@ -1016,17 +1021,30 @@ impl<'a> MethodAssembler<'a> {
                         let arg_reg_idx = self.regs.iter().position(|r| *r == arg_reg).unwrap();
                         par_copies.insert((arg_reg_idx, dst_reg_idx));
                     } else {
-                        ser_copies.push((arg, dst_reg));
+                        // arg_reg is used for argument passing, but the
+                        // destination register is not used by our register
+                        // allocator. In this case the copy should be arranged
+                        // before the parallel copy sequence so the value of
+                        // arg_reg is not overwritten. Overwriting dst_reg is
+                        // fine, because it's not used by our allocator.
+                        pre_ser_copies.push((arg, dst_reg));
                     }
                 }
-                _ => ser_copies.push((arg, dst_reg)),
+                // An immediate, a memory operand, or a non-argument register.
+                // They will not be overwritten by the parallel copy sequence
+                // anyways. So we arrange them to be copied after the parallel
+                // copy sequence.
+                _ => post_ser_copies.push((arg, dst_reg)),
             }
+        }
+        for (arg, dst_reg) in pre_ser_copies {
+            self.emit_code(format!("movq {}, {}", arg, dst_reg,));
         }
         if !par_copies.is_empty() {
             self.emit_code(format!("# Parallel argument copy: {:?}", par_copies));
             self.emit_par_reg_copies(par_copies);
         }
-        for (arg, dst_reg) in ser_copies {
+        for (arg, dst_reg) in post_ser_copies {
             self.emit_code(format!("movq {}, {}", arg, dst_reg,));
         }
         self.emit_code(format!("call {}", callee_name));
