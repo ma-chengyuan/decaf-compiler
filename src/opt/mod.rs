@@ -191,12 +191,12 @@ pub fn optimize(mut program: Program, optimizations: &[Optimization]) -> Program
             }
         }
     }
-    show_graphviz(&program.methods.values().next().unwrap().dump_graphviz());
     if optimizations.contains(&Optimization::GVNPRE) {
         for method in program.methods.values_mut() {
             gvnpre::gvnpre::perform_gvnpre(method);
         }
         for _ in 0..10 {
+            // I don't know how to use propagate_copies and eliminate_dead_code
             for method in program.methods.values_mut() {
                 copy_prop::propagate_copies(method);
             }
@@ -205,7 +205,6 @@ pub fn optimize(mut program: Program, optimizations: &[Optimization]) -> Program
             }
         }
     }
-    show_graphviz(&program.methods.values().next().unwrap().dump_graphviz());
     // let mut ls = vec![];
     // for (name, method) in program.methods.iter() {
     //     // println!("{}:", name);
