@@ -210,13 +210,13 @@ pub fn optimize(mut program: Program, optimizations: &[Optimization]) -> Program
             for method in program.methods.values_mut() {
                 constant_folding::fold_constants(method);
             }
+        }
 
             // Copy propagation
             if optimizations.contains(&Optimization::CopyPropagation) {
                 for method in program.methods.values_mut() {
                     copy_prop::propagate_copies(method);
                 }
-            }
         }
     }
 
