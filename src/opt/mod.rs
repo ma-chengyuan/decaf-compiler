@@ -163,7 +163,7 @@ pub fn optimize(mut program: Program, optimizations: &[Optimization]) -> Program
     }
 
     if optimizations.contains(&Optimization::FunctionInlining) {
-        // function_inlining::inline_functions(&mut program);
+        function_inlining::inline_functions(&mut program);
     }
 
     // Construct SSA form
