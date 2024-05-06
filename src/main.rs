@@ -114,8 +114,8 @@ fn main_inter(args: utils::cli::Args, mut writer: Box<dyn std::io::Write>) {
     let mut checker = IrBuilder::new();
     let res = checker.check_program(&ast);
     match res {
-        Ok(program) => {
-            // program = opt::optimize(program, &args.opt);
+        Ok(mut program) => {
+            program = opt::optimize(program, &args.opt);
             writeln!(writer, "{}", program).unwrap();
         }
         Err(errors) => dump_errors_and_exit(errors),
