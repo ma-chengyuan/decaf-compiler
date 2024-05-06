@@ -8,12 +8,7 @@ use crate::{
     parse::ast::Ident,
 };
 
-fn can_inline(method: &Method) -> bool {
-    const MAX_INSTRUCTION_CT: usize = 25;
-    // don't allow too many instructions
-    if method.n_insts() > MAX_INSTRUCTION_CT {
-        return false;
-    }
+fn can_inline(program: &Program, method: &Method) -> bool {
     // don't allow recurisve calls
     for (_, inst) in method.iter_insts() {
         if let Inst::Call {
@@ -36,6 +31,29 @@ fn can_inline(method: &Method) -> bool {
             }
         }
     }
+    // if only called once, inline
+    let mut call_ct = 0;
+    for some_method in program.methods.values() {
+        for (_, inst) in some_method.iter_insts() {
+            if let Inst::Call {
+                method: method_name,
+                ..
+            } = inst
+            {
+                if method_name.as_ref() == method.name.inner.as_ref() {
+                    call_ct += 1;
+                }
+            }
+        }
+    }
+    if call_ct == 1 {
+        return true;
+    }
+    const MAX_INSTRUCTION_CT: usize = 25;
+    // don't allow too many instructions
+    if method.n_insts() > MAX_INSTRUCTION_CT {
+        return false;
+    }
     true
 }
 
@@ -45,14 +63,16 @@ pub fn inline_functions(program: &mut Program) {
         if method_name == "main" {
             continue;
         }
-        if can_inline(method) {
+        if can_inline(program, method) {
             functions_to_inline.insert(method_name.clone(), method.clone());
         }
     }
 
     for method in program.methods.values_mut() {
-        for block_ref in 0..method.n_blocks() {
-            let block_ref = BlockRef(block_ref);
+        let mut cur_block_ref = 0;
+        while cur_block_ref < method.n_blocks() {
+            let block_ref = BlockRef(cur_block_ref);
+            cur_block_ref += 1;
 
             for inst_ref in method.block(block_ref).insts.clone().into_iter() {
                 let inst = method.inst(inst_ref).clone();
