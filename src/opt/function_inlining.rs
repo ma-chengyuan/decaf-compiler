@@ -14,7 +14,18 @@ fn can_inline(method: &Method) -> bool {
     if method.n_insts() > MAX_INSTRUCTION_CT {
         return false;
     }
-    // todo check to see if it's recursive
+    for (_, inst) in method.iter_insts() {
+        if let Inst::Call {
+            method: method_name,
+            ..
+        } = inst
+        {
+            if method_name.as_ref() == method.name.inner.as_ref() {
+                // don't allow recurisve calls
+                return false;
+            }
+        }
+    }
     return true;
 }
 
