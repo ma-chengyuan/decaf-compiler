@@ -238,12 +238,12 @@ pub mod gvnpre {
                 if let Expression::Phi(_) = expr {
                     phi_gen[current_block.0].insert(value.clone(), inst);
                 }
-
-                if added_vals.insert(value.clone()) {
-                    exp_gen[current_block.0].push_back((value.clone(), expr.clone()));
-                }
             } else {
                 tmp_gen[current_block.0].insert(inst);
+            }
+
+            if added_vals.insert(value.clone()) {
+                exp_gen[current_block.0].push_back((value.clone(), expr.clone()));
             }
         }
         // Recurse
@@ -528,6 +528,18 @@ pub mod gvnpre {
                     })
                     .collect::<HashSet<usize>>();
 
+                // println!("Method Name: {:?}", method.name);
+                // for (pred, values) in translated_values.iter() {
+                //     println!("Predecessor: {:?}", pred);
+                //     println!("Leader Table for Block {:?}:", pred);
+                //     for (leader_val, leader_inst) in leaders[pred.0].iter() {
+                //         println!("  Value: {:?}, InstRef: {:?}", leader_val, leader_inst);
+                //     }
+                //     for (val, expr) in values {
+                //         println!("Value: {:?}, Expression: {:?}", val, expr);
+                //     }
+                // }
+
                 let mut new_phis = vec![Vec::new(); to_hoist.len()];
                 for (pred, exprs) in translated_values.into_iter() {
                     let mut i = 0;
@@ -542,6 +554,7 @@ pub mod gvnpre {
                                 let inst = expr_to_inst(expr.clone(), leaders);
                                 let instref = method.next_inst(pred.clone(), inst.clone());
                                 let (value, _, _) = value_table.maybe_insert_inst(instref, &inst);
+                                assert!(value.0 == val.0, "Value table and leader set disagree on instref");
                                 assert!(
                                     !leaders.contains_key(&value),
                                     "Leader set unexpectedly contains the value."
@@ -581,6 +594,13 @@ pub mod gvnpre {
                     };
                     value_table.tie_expr(Expression::new_phi(phi), val.clone());
                     value_table.tie_inst(instref, val.clone());
+
+                    if leaders[block.0].contains_key(&val) {
+                        let old_instref = leaders[block.0].remove(&val).unwrap();
+                        if let Some(annot) = method.get_inst_annotation(&old_instref) {
+                            *method.annotate_inst_mut(instref) = annot.clone();
+                        }
+                    }
                     leaders[block.0].insert(val.clone(), instref);
                     added_leaders[block.0].insert(val.clone(), instref);
                     i += 1;
@@ -660,10 +680,10 @@ pub mod gvnpre {
         let (preds, succs, mut leaders, mut antic_in, phi_gen, mut value_table) =
             build_sets(method);
 
-        println! {"leaders: \n{:?}\n", leaders};
-        println! {"antic_in: \n{:?}\n", antic_in};
-        println! {"phi_gen: \n{:?}\n", phi_gen};
-        println! {"value_table: \n{:?}\n", value_table};
+        // println! {"leaders: \n{:?}\n", leaders};
+        // println! {"antic_in: \n{:?}\n", antic_in};
+        // println! {"phi_gen: \n{:?}\n", phi_gen};
+        // println! {"value_table: \n{:?}\n", value_table};
 
         perform_insert(
             &preds,
@@ -674,9 +694,9 @@ pub mod gvnpre {
             &mut antic_in,
         );
 
-        println! {"After insertion"};
-        println! {"leaders: \n{:?}\n", leaders};
-        println! {"value_table: \n{:?}\n", value_table};
+        // println! {"After insertion"};
+        // println! {"leaders: \n{:?}\n", leaders};
+        // println! {"value_table: \n{:?}\n", value_table};
 
         perform_eliminate(method, &mut leaders, &mut value_table)
     }

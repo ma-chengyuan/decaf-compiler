@@ -191,7 +191,6 @@ pub fn optimize(mut program: Program, optimizations: &[Optimization]) -> Program
             }
         }
     }
-
     show_graphviz(&program.methods.values().next().unwrap().dump_graphviz());
     if optimizations.contains(&Optimization::GVNPRE) {
         for method in program.methods.values_mut() {
