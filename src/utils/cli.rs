@@ -36,6 +36,8 @@ pub enum Optimization {
     RedundantGlobalAndArrayAccessElimination,
     #[clap(name = "licm")]
     LoopInvariantCodeMotion,
+    #[clap(name = "dase")]
+    DeadArrayStoreElimination,
     #[clap(name = "all")]
     All,
 }
