@@ -287,10 +287,10 @@ pub mod gvnpre {
         let mut added_vals = HashSet::new();
         for inst in method.block(current_block).insts.clone() {
             let (value, expr, okay) = value_table.maybe_insert_inst(inst, method.inst(inst));
-            leaders[current_block.0].entry(value.clone()).or_insert(inst);
             if okay {
+                leaders[current_block.0].entry(value.clone()).or_insert(inst);
                 if let Expression::Phi(_) = expr {
-                    phi_gen[current_block.0].insert(value.clone(), inst);
+                     phi_gen[current_block.0].entry(value.clone()).or_insert(inst);
                 }
             } else {
                 tmp_gen[current_block.0].insert(inst);
@@ -317,28 +317,60 @@ pub mod gvnpre {
     }
 
     fn phi_translate(
+        method: &Method,
         block: BlockRef,
-        phi_gen: &LinkedList<(Value, Expression)>,
+        phi_gen: &HashMap<Value, InstRef>,
+        values_to_translate: &LinkedList<(Value, Expression)>,
         value_table: &mut ValueTable,
     ) -> LinkedList<(Value, Expression)> {
         let mut result = LinkedList::new();
-        for (value, expr) in phi_gen.iter() {
-            if let Expression::Phi(phi) = expr {
-                let translated_value = phi[&block];
-                let new_expr = Expression::new_copy(value_table.lookup_inst(translated_value));
-                let (new_val, _) = value_table.lookup_expr(&new_expr);
-                result.push_back((new_val, new_expr));
+        let mut translated: HashMap<Value, Value> = HashMap::new();    
+        for (value, expr) in values_to_translate.iter() {
+            if let Some(phi_val) = phi_gen.get(&value) {
+                let phi_inst = method.inst(*phi_val);
+                let Inst::Phi(phi) = phi_inst else {
+                    unreachable!()
+                };
+
+                let above_inst = phi[&block];
+                let (translated_val, _) = value_table.lookup_expr(&Expression::Reg(above_inst));
+                translated.insert(value.clone(), translated_val.clone());
+                result.push_back((translated_val, expr.clone()));
             } else {
-                result.push_back((value.clone(), expr.clone()));
+                macro_rules! try_trans {
+                    ($t:path, $($x:expr), +) => {
+                        $t($(if let Some(new) = translated.get($x) { new.clone() } else { $x.clone() }), +)
+                    }
+                }
+                let new_expr = match expr {
+                    Expression::Add(lhs, rhs) => try_trans!(Expression::new_add, lhs, rhs),
+                    Expression::Sub(lhs, rhs) => try_trans!(Expression::new_sub, lhs, rhs),
+                    Expression::Mul(lhs, rhs) => try_trans!(Expression::new_mul, lhs, rhs),
+                    Expression::Div(lhs, rhs) => try_trans!(Expression::new_div, lhs, rhs),
+                    Expression::Mod(lhs, rhs) => try_trans!(Expression::new_mod, lhs, rhs),
+                    Expression::Neg(operand) => try_trans!(Expression::new_neg, operand),
+                    Expression::Not(operand) => try_trans!(Expression::new_not, operand),
+                    Expression::Eq(lhs, rhs) => try_trans!(Expression::new_eq, lhs, rhs),
+                    Expression::Neq(lhs, rhs) => try_trans!(Expression::new_neq, lhs, rhs),
+                    Expression::Less(lhs, rhs) => try_trans!(Expression::new_less, lhs, rhs),
+                    Expression::LessEq(lhs, rhs) => try_trans!(Expression::new_lesseq, lhs, rhs),
+                    Expression::Phi(_) => continue, // I have no idea why we continue. Shouldn't it be unreachable?
+                    e => e.clone()
+                };
+                let (new_val, _) = value_table.lookup_expr(&new_expr);
+                translated.insert(value.clone(), new_val.clone());
+                result.push_back((new_val, new_expr));
             }
         }
         result
     }
 
     fn build_sets_phase2(
+        method: &Method,
         block: BlockRef,
         succs: &Vec<Vec<BlockRef>>,
         exp_gen: &Vec<LinkedList<(Value, Expression)>>,
+        phi_gen: &Vec<HashMap<Value, InstRef>>,
         tmp_gen: &Vec<HashSet<InstRef>>,
         antic_in: &mut AntileaderSet,
         value_table: &mut ValueTable,
@@ -348,7 +380,7 @@ pub mod gvnpre {
         if succs.len() == 1 {
             // Phi translate and propagate
             let succ = succs[0];
-            result = phi_translate(block.clone(), &antic_in[succ.0], value_table);
+            result = phi_translate(method, block.clone(), &phi_gen[succ.0], &exp_gen[succ.0], value_table);
         } else if succs.len() > 1 {
             // Compute intersection of exprs. Assert no children have phi nodes.
             let mut exprs = antic_in[succs[0].0].clone();
@@ -376,14 +408,16 @@ pub mod gvnpre {
             .iter()
             .chain(result.iter())
             .filter_map(|(value, expr)| {
-                for dependency in expr.depends_on().iter() {
-                    if killed_values.contains(dependency) {
+                for dependency in expr.depends_on().into_iter() {
+                    if killed_values.contains(&dependency) {
+                        // println!("Killing value: {:?} due to dependency on {:?}", value, dependency);
                         killed_values.insert(value.clone());
                         return None;
                     }
                 }
                 if let Expression::Reg(inst) = expr {
                     if tmp_gen[block.0].contains(inst) {
+                        // println!("Killing value: {:?}", value);
                         killed_values.insert(value.clone());
                         return None;
                     }
@@ -485,9 +519,11 @@ pub mod gvnpre {
             qidx += 1;
 
             let changed = build_sets_phase2(
+                method,
                 block,
                 &succs,
                 &exp_gen,
+                &phi_gen,
                 &tmp_gen,
                 &mut antic_in,
                 &mut value_table,
@@ -531,6 +567,7 @@ pub mod gvnpre {
         method: &mut Method,
         value_table: &mut ValueTable,
         leaders: &mut LeaderSet,
+        phi_gen: &mut PhiGen,
         antic_in: &mut AntileaderSet,
     ) {
         let num_blocks = method.n_blocks();
@@ -546,6 +583,7 @@ pub mod gvnpre {
             value_table: &mut ValueTable,
             leaders: &mut LeaderSet,
             added_leaders: &mut Vec<HashMap<Value, InstRef>>,
+            phi_gen: &mut PhiGen,
             antic_in: &mut AntileaderSet,
             changed: &mut bool,
         ) {
@@ -560,7 +598,13 @@ pub mod gvnpre {
                     .map(|pred| {
                         (
                             pred.clone(),
-                            phi_translate(*pred, &antic_in[block.0], value_table),
+                            phi_translate(
+                                method,
+                                pred.clone(),
+                                &phi_gen[block.0],
+                                &antic_in[block.0],
+                                value_table,
+                            ),
                         )
                     })
                     .collect::<Vec<(BlockRef, LinkedList<(Value, Expression)>)>>();
@@ -605,6 +649,7 @@ pub mod gvnpre {
                         let instref = match leaders.get(&val) {
                             Some(inst) => *inst,
                             None => {
+                                println!("Inserting {:?} ({:?}) into {:?}", expr, val, pred);
                                 let inst = expr_to_inst(expr.clone(), leaders);
                                 let instref = method.next_inst(pred.clone(), inst.clone());
                                 let (value, _, _) = value_table.maybe_insert_inst(instref, &inst);
@@ -674,6 +719,7 @@ pub mod gvnpre {
                     value_table,
                     leaders,
                     added_leaders,
+                    phi_gen,
                     antic_in,
                     changed,
                 );
@@ -698,6 +744,7 @@ pub mod gvnpre {
                 value_table,
                 leaders,
                 &mut added_leaders,
+                phi_gen,
                 antic_in,
                 &mut changed,
             );
@@ -734,12 +781,12 @@ pub mod gvnpre {
 
     pub fn perform_gvnpre(method: &mut Method) {
         // show_graphviz(&method.dump_graphviz());
-        let (preds, succs, mut leaders, mut antic_in, _phi_gen, mut value_table) =
+        let (preds, succs, mut leaders, mut antic_in, mut phi_gen, mut value_table) =
             build_sets(method);
 
         // println! {"leaders: \n{:?}\n", leaders};
         // println! {"antic_in: \n{:?}\n", antic_in};
-        // // println! {"phi_gen: \n{:?}\n", phi_gen};
+        // println! {"phi_gen: \n{:?}\n", phi_gen};
         // println! {"value_table: \n{:?}\n", value_table};
 
         perform_insert(
@@ -748,6 +795,7 @@ pub mod gvnpre {
             method,
             &mut value_table,
             &mut leaders,
+            &mut phi_gen,
             &mut antic_in,
         );
 
