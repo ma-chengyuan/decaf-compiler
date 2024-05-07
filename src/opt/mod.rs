@@ -14,6 +14,7 @@ pub mod dead_code;
 pub mod dom;
 pub mod function_inlining;
 pub mod loop_utils;
+pub mod rgae;
 pub mod ssa;
 
 // Common graph algorithms for control flow graphs.
@@ -158,6 +159,7 @@ pub fn optimize(mut program: Program, optimizations: &[Optimization]) -> Program
             Optimization::ConstantFolding,
             // Optimization::ArraySplitting,
             Optimization::FunctionInlining,
+            Optimization::RedundantGlobalAndArrayAccessElimination,
         ]);
     }
 
@@ -189,6 +191,12 @@ pub fn optimize(mut program: Program, optimizations: &[Optimization]) -> Program
         if optimizations.contains(&Optimization::CommonSubexpressionElimination) {
             for method in program.methods.values_mut() {
                 cse::eliminate_common_subexpressions(method);
+            }
+        }
+
+        if optimizations.contains(&Optimization::RedundantGlobalAndArrayAccessElimination) {
+            for method in program.methods.values_mut() {
+                rgae::eliminate_redundant_global_and_array_access(method);
             }
         }
 

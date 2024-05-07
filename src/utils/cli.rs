@@ -32,6 +32,8 @@ pub enum Optimization {
     ArraySplitting,
     #[clap(name = "inline")]
     FunctionInlining,
+    #[clap(name = "rgae")]
+    RedundantGlobalAndArrayAccessElimination,
     #[clap(name = "all")]
     All,
 }
