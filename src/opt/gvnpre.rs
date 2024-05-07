@@ -4,7 +4,8 @@ pub mod gvnpre {
             constant::Const,
             ir::{BlockRef, Inst, InstRef, Method, Terminator},
         },
-        opt::dom::compute_dominance, utils::show_graphviz,
+        opt::dom::compute_dominance,
+        utils::show_graphviz,
     };
     use std::{
         collections::{HashMap, HashSet, LinkedList},
@@ -71,7 +72,7 @@ pub mod gvnpre {
                 Expression::Less(..) => false,
                 Expression::LessEq(..) => false,
                 Expression::Reg(_) => true,
-                Expression::Phi(_) => true,
+                Expression::Phi(_) => false,
             }
         }
     }
@@ -261,11 +262,13 @@ pub mod gvnpre {
         // }
 
         pub fn tie_expr(&mut self, expr: Expression, value: Value) {
-            if let Some(index) =
-                self.values
-                    .iter()
-                    .find_map(|(k, v)| if self.expr_eq(k, &expr) { Some(v) } else { None })
-            {
+            if let Some(index) = self.values.iter().find_map(|(k, v)| {
+                if self.expr_eq(k, &expr) {
+                    Some(v)
+                } else {
+                    None
+                }
+            }) {
                 assert!(*index == value);
             } else {
                 self.values.push_back((expr.clone(), value.clone()));
@@ -299,17 +302,28 @@ pub mod gvnpre {
         let mut added_vals = HashSet::new();
         for inst in method.block(current_block).insts.clone() {
             let (value, expr, okay) = value_table.maybe_insert_inst(inst, method.inst(inst));
-            leaders[current_block.0].entry(value.clone()).or_insert(inst);
             if okay {
+                leaders[current_block.0]
+                    .entry(value.clone())
+                    .or_insert(inst);
                 if let Expression::Phi(_) = expr {
-                     phi_gen[current_block.0].entry(value.clone()).or_insert(inst);
+                    phi_gen[current_block.0]
+                        .entry(value.clone())
+                        .or_insert(inst);
                 }
             } else {
                 tmp_gen[current_block.0].insert(inst);
             }
-
-            if added_vals.insert(value.clone()) {
-                exp_gen[current_block.0].push_back((value.clone(), expr.clone()));
+            if let Expression::Phi(_) = expr {
+                // Phi: change to Reg
+                if added_vals.insert(value.clone()) {
+                    exp_gen[current_block.0].push_back((value.clone(), Expression::Reg(inst)));
+                }
+            } else {
+                // Handle non-Phi expressions
+                if added_vals.insert(value.clone()) {
+                    exp_gen[current_block.0].push_back((value.clone(), expr.clone()));
+                }
             }
         }
         // Recurse
@@ -336,7 +350,7 @@ pub mod gvnpre {
         value_table: &mut ValueTable,
     ) -> LinkedList<(Value, Expression)> {
         let mut result = LinkedList::new();
-        let mut translated: HashMap<Value, Value> = HashMap::new();    
+        let mut translated: HashMap<Value, Value> = HashMap::new();
         for (value, expr) in values_to_translate.iter() {
             if let Some(phi_val) = phi_gen.get(&value) {
                 let phi_inst = method.inst(*phi_val);
@@ -348,13 +362,14 @@ pub mod gvnpre {
                 let translated_val = value_table.lookup_inst(&above_inst);
                 // let (translated_val, _) = value_table.lookup_expr(&Expression::Reg(above_inst));
                 translated.insert(value.clone(), translated_val.clone());
-                result.push_back((translated_val, expr.clone()));
+                result.push_back((translated_val, Expression::Reg(above_inst)));
             } else {
                 macro_rules! try_trans {
                     ($t:path, $($x:expr), +) => {
                         $t($(if let Some(new) = translated.get($x) { new.clone() } else { $x.clone() }), +)
                     }
                 }
+                // If it's from a Phi, it will necessarily be in translated map. Otherwise, it must have existed before as well.
                 let new_expr = match expr {
                     Expression::Add(lhs, rhs) => try_trans!(Expression::new_add, lhs, rhs),
                     Expression::Sub(lhs, rhs) => try_trans!(Expression::new_sub, lhs, rhs),
@@ -369,7 +384,7 @@ pub mod gvnpre {
                     Expression::Less(lhs, rhs) => try_trans!(Expression::new_less, lhs, rhs),
                     Expression::LessEq(lhs, rhs) => try_trans!(Expression::new_lesseq, lhs, rhs),
                     Expression::Phi(_) => continue, // I have no idea why we continue. Shouldn't it be unreachable?
-                    e => e.clone()
+                    e => e.clone(),
                 };
                 let (new_val, _) = value_table.lookup_expr(&new_expr);
                 translated.insert(value.clone(), new_val.clone());
@@ -394,7 +409,13 @@ pub mod gvnpre {
         if succs.len() == 1 {
             // Phi translate and propagate
             let succ = succs[0];
-            result = phi_translate(method, block.clone(), &phi_gen[succ.0], &exp_gen[succ.0], value_table);
+            result = phi_translate(
+                method,
+                block.clone(),
+                &phi_gen[succ.0],
+                &antic_in[succ.0],
+                value_table,
+            );
         } else if succs.len() > 1 {
             // Compute intersection of exprs. Assert no children have phi nodes.
             let mut exprs = antic_in[succs[0].0].clone();
@@ -671,7 +692,10 @@ pub mod gvnpre {
                                 let inst = expr_to_inst(expr.clone(), leaders);
                                 let instref = method.next_inst(pred.clone(), inst.clone());
                                 let (value, _, _) = value_table.maybe_insert_inst(instref, &inst);
-                                assert!(value.0 == val.0, "Value table and leader set disagree on instref");
+                                assert!(
+                                    value.0 == val.0,
+                                    "Value table and leader set disagree on instref"
+                                );
                                 assert!(
                                     !leaders.contains_key(&value),
                                     "Leader set unexpectedly contains the value."
@@ -802,8 +826,14 @@ pub mod gvnpre {
         let (preds, succs, mut leaders, mut antic_in, mut phi_gen, mut value_table) =
             build_sets(method);
 
-        // println! {"leaders: \n{:?}\n", leaders};
-        // println! {"antic_in: \n{:?}\n", antic_in};
+        // println! {"leaders"};
+        // for (block_index, leader_map) in leaders.iter().enumerate() {
+        //     println!("Block {}: {:?}", block_index, leader_map);
+        // }
+        // println!("antic_in:");
+        // for (block_index, antic_values) in antic_in.iter().enumerate() {
+        //     println!("Block {}: {:?}", block_index, antic_values);
+        // }
         // println! {"phi_gen: \n{:?}\n", phi_gen};
         // println! {"value_table: \n{:?}\n", value_table};
 
