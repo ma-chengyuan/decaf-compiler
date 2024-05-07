@@ -164,9 +164,9 @@ pub mod gvnpre {
             (value_index, inserted)
         }
 
-        pub fn lookup_inst(&self, inst: InstRef) -> Value {
+        pub fn lookup_inst(&self, inst: &InstRef) -> Value {
             // Must exist, otherwise panic!
-            self.map.get(&inst).unwrap().clone()
+            self.map.get(inst).unwrap().clone()
         }
 
         pub fn expr_eq(&self, lhs: &Expression, rhs: &Expression) -> bool {
@@ -200,35 +200,35 @@ pub mod gvnpre {
             let mut okay = true;
             let expr = match inst_value {
                 Inst::Add(lhs, rhs) => {
-                    Expression::new_add(self.lookup_inst(*lhs), self.lookup_inst(*rhs))
+                    Expression::new_add(self.lookup_inst(lhs), self.lookup_inst(rhs))
                 }
                 Inst::Sub(lhs, rhs) => {
-                    Expression::new_sub(self.lookup_inst(*lhs), self.lookup_inst(*rhs))
+                    Expression::new_sub(self.lookup_inst(lhs), self.lookup_inst(rhs))
                 }
                 Inst::Mul(lhs, rhs) => {
-                    Expression::new_mul(self.lookup_inst(*lhs), self.lookup_inst(*rhs))
+                    Expression::new_mul(self.lookup_inst(lhs), self.lookup_inst(rhs))
                 }
                 Inst::Div(lhs, rhs) => {
-                    Expression::new_div(self.lookup_inst(*lhs), self.lookup_inst(*rhs))
+                    Expression::new_div(self.lookup_inst(lhs), self.lookup_inst(rhs))
                 }
                 Inst::Mod(lhs, rhs) => {
-                    Expression::new_mod(self.lookup_inst(*lhs), self.lookup_inst(*rhs))
+                    Expression::new_mod(self.lookup_inst(lhs), self.lookup_inst(rhs))
                 }
-                Inst::Neg(operand) => Expression::new_neg(self.lookup_inst(*operand)),
-                Inst::Not(operand) => Expression::new_not(self.lookup_inst(*operand)),
-                Inst::Copy(src) => Expression::new_copy(self.lookup_inst(*src)),
+                Inst::Neg(operand) => Expression::new_neg(self.lookup_inst(operand)),
+                Inst::Not(operand) => Expression::new_not(self.lookup_inst(operand)),
+                Inst::Copy(src) => Expression::new_copy(self.lookup_inst(src)),
                 Inst::LoadConst(value) => Expression::new_load_const(value.clone()),
                 Inst::Eq(lhs, rhs) => {
-                    Expression::new_eq(self.lookup_inst(*lhs), self.lookup_inst(*rhs))
+                    Expression::new_eq(self.lookup_inst(lhs), self.lookup_inst(rhs))
                 }
                 Inst::Neq(lhs, rhs) => {
-                    Expression::new_neq(self.lookup_inst(*lhs), self.lookup_inst(*rhs))
+                    Expression::new_neq(self.lookup_inst(lhs), self.lookup_inst(rhs))
                 }
                 Inst::Less(lhs, rhs) => {
-                    Expression::new_less(self.lookup_inst(*lhs), self.lookup_inst(*rhs))
+                    Expression::new_less(self.lookup_inst(lhs), self.lookup_inst(rhs))
                 }
                 Inst::LessEq(lhs, rhs) => {
-                    Expression::new_lesseq(self.lookup_inst(*lhs), self.lookup_inst(*rhs))
+                    Expression::new_lesseq(self.lookup_inst(lhs), self.lookup_inst(rhs))
                 }
                 Inst::Phi(values) => {
                     let phi = Expression::new_phi(values.clone());
@@ -333,7 +333,7 @@ pub mod gvnpre {
                 };
 
                 let above_inst = phi[&block];
-                let (translated_val, _) = value_table.lookup_expr(&Expression::Reg(above_inst));
+                let translated_val = value_table.lookup_inst(&above_inst);
                 translated.insert(value.clone(), translated_val.clone());
                 result.push_back((translated_val, expr.clone()));
             } else {
@@ -350,6 +350,7 @@ pub mod gvnpre {
                     Expression::Mod(lhs, rhs) => try_trans!(Expression::new_mod, lhs, rhs),
                     Expression::Neg(operand) => try_trans!(Expression::new_neg, operand),
                     Expression::Not(operand) => try_trans!(Expression::new_not, operand),
+                    Expression::Copy(src) => try_trans!(Expression::new_copy, src),
                     Expression::Eq(lhs, rhs) => try_trans!(Expression::new_eq, lhs, rhs),
                     Expression::Neq(lhs, rhs) => try_trans!(Expression::new_neq, lhs, rhs),
                     Expression::Less(lhs, rhs) => try_trans!(Expression::new_less, lhs, rhs),
@@ -650,6 +651,10 @@ pub mod gvnpre {
                             Some(inst) => *inst,
                             None => {
                                 // println!("Inserting {:?} ({:?}) into {:?}", expr, val, pred);
+                                // println!("Current leaders before insertion:");
+                                // for (leader_val, leader_inst) in leaders.iter() {
+                                //     println!("  Leader Value: {:?}, InstRef: {:?}", leader_val, leader_inst);
+                                // }
                                 let inst = expr_to_inst(expr.clone(), leaders);
                                 let instref = method.next_inst(pred.clone(), inst.clone());
                                 let (value, _, _) = value_table.maybe_insert_inst(instref, &inst);
@@ -764,7 +769,7 @@ pub mod gvnpre {
         let mut changes: Vec<(InstRef, Inst)> = Vec::new();
         for (block, block_data) in method.iter_blocks() {
             for inst in block_data.insts.iter() {
-                let val = value_table.lookup_inst(*inst);
+                let val = value_table.lookup_inst(inst);
                 if let Some(leader) = leaders[block.0].get(&val) {
                     if leader != inst {
                         changes.push((*inst, Inst::Copy(*leader)));
