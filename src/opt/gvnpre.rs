@@ -170,7 +170,7 @@ pub mod gvnpre {
         }
 
         pub fn expr_eq(&self, lhs: &Expression, rhs: &Expression) -> bool {
-            lhs == rhs
+            lhs == rhs && !lhs.is_simple()
         }
 
         pub fn lookup_expr(&mut self, expr: &Expression) -> (Value, bool) {
@@ -333,7 +333,8 @@ pub mod gvnpre {
                 };
 
                 let above_inst = phi[&block];
-                let translated_val = value_table.lookup_inst(&above_inst);
+                // let translated_val = value_table.lookup_inst(&above_inst);
+                let (translated_val, _) = value_table.lookup_expr(&Expression::Reg(above_inst));
                 translated.insert(value.clone(), translated_val.clone());
                 result.push_back((translated_val, expr.clone()));
             } else {
