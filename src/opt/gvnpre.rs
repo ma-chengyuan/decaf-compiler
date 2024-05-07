@@ -786,7 +786,7 @@ pub mod gvnpre {
     }
 
     pub fn perform_gvnpre(method: &mut Method) {
-        show_graphviz(&method.dump_graphviz());
+        // show_graphviz(&method.dump_graphviz());
         let (preds, succs, mut leaders, mut antic_in, mut phi_gen, mut value_table) =
             build_sets(method);
 
@@ -811,6 +811,6 @@ pub mod gvnpre {
 
         perform_eliminate(method, &mut leaders, &mut value_table);
         // println!("Finished perform_gvnpre");
-        show_graphviz(&method.dump_graphviz());
+        // show_graphviz(&method.dump_graphviz());
     }
 }
