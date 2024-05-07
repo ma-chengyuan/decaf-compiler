@@ -643,11 +643,12 @@ impl Method {
         let predecessors = predecessors(self);
         let mut next: Vec<Option<BlockRef>> = vec![None; self.n_blocks()];
         let mut prev: Vec<Option<BlockRef>> = vec![None; self.n_blocks()];
-        // TODO: DONT MERGE BLOCKS THAT START WITH PHI NODES!!!
         for block_ref in self
             .iter_block_refs()
             .filter(|b| predecessors[b.0].len() == 1)
         {
+            // block_ref must not start with phi instructions, because it only
+            // has one predecessor.
             let predecessor = predecessors[block_ref.0].iter().next().copied().unwrap();
             let mut can_merge = true;
             for_each_successor(self, predecessor, |succ| {
@@ -667,6 +668,21 @@ impl Method {
             }
             if cur != block_ref {
                 self.block_mut(block_ref).term = self.block(cur).term.clone();
+                let mut successors = HashSet::new();
+                for_each_successor(self, cur, |succ| {
+                    successors.insert(succ);
+                });
+                for succ in successors {
+                    for phi_ref in self.phis(succ) {
+                        let Inst::Phi(map) = self.inst_mut(phi_ref) else {
+                            unreachable!();
+                        };
+                        if let Some(inst_ref) = map.get(&cur).cloned() {
+                            map.remove(&cur);
+                            map.insert(block_ref, inst_ref);
+                        }
+                    }
+                }
             }
         }
         self.remove_unreachable();
