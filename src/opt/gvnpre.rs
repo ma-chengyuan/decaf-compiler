@@ -169,6 +169,15 @@ pub mod gvnpre {
             self.map.get(inst).unwrap().clone()
         }
 
+        pub fn lookup_inst_create(&mut self, inst: &InstRef) -> (Value, bool) {
+            if let Some(value) = self.map.get(inst) {
+                return (value.clone(), false);
+            }
+            let ans = self.next_value();
+            self.map.insert(*inst, ans.clone());
+            (ans, true)
+        }
+
         pub fn expr_eq(&self, lhs: &Expression, rhs: &Expression) -> bool {
             lhs == rhs
         }
@@ -177,6 +186,9 @@ pub mod gvnpre {
             if let Expression::Copy(src) = expr {
                 debug_assert!(src.0 < self._next_value);
                 return (src.clone(), false);
+            }
+            if let Expression::Reg(inst) = expr {
+                return self.lookup_inst_create(inst);
             }
             match self
                 .values
