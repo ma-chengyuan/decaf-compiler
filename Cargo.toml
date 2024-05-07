@@ -30,6 +30,6 @@ tempfile = "3.10"
 petgraph = "0.6"
 
 # Requires libclang
-good_lp = { version = "1.8", default-features = false, features = [
+good_lp = { git = "https://github.com/ma-chengyuan/good_lp.git", rev = "07380b0", default-features = false, features = [
     "highs",
 ], optional = true }
