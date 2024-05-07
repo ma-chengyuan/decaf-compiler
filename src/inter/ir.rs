@@ -69,7 +69,7 @@ impl fmt::Display for StackSlotRef {
 /// An address in memory. This is used for loads and stores.
 /// We don't support pointer arithmetic, so we don't need to support arbitrary
 /// addresses.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Address {
     Global(IdentStr),
     Local(StackSlotRef),

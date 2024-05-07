@@ -34,6 +34,8 @@ pub enum Optimization {
     FunctionInlining,
     #[clap(name = "rgae")]
     RedundantGlobalAndArrayAccessElimination,
+    #[clap(name = "licm")]
+    LoopInvariantCodeMotion,
     #[clap(name = "all")]
     All,
 }
