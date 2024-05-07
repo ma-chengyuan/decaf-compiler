@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::{collections::HashSet};
 
 use crate::{
     inter::ir::{BlockRef, Inst, Method, Program, Terminator},
@@ -193,6 +193,14 @@ pub fn optimize(mut program: Program, optimizations: &[Optimization]) -> Program
             }
         }
 
+        // GVN-PRE (Can replace CSE)
+        if optimizations.contains(&Optimization::GVNPRE) {
+            for method in program.methods.values_mut() {
+                *method = split_critical_edges(method);
+                gvnpre::gvnpre::perform_gvnpre(method);
+            }
+        }
+
         // Dead code elimination
         if optimizations.contains(&Optimization::DeadCodeElimination) {
             for method in program.methods.values_mut() {
@@ -203,28 +211,6 @@ pub fn optimize(mut program: Program, optimizations: &[Optimization]) -> Program
         if optimizations.contains(&Optimization::ArraySplitting) {
             for method in program.methods.values_mut() {
                 array_split::split_arrays(method);
-            }
-        }
-    }
-
-    if optimizations.contains(&Optimization::GVNPRE) {
-        for method in program.methods.values_mut() {
-            gvnpre::gvnpre::perform_gvnpre(method);
-        }
-        for _ in 0..3 {
-            // IDK HOW THIS WORKSSSSS
-            // I don't know how to use propagate_copies and eliminate_dead_code
-            if optimizations.contains(&Optimization::ConstantFolding) {
-                for method in program.methods.values_mut() {
-                    constant_folding::fold_constants(method);
-                }
-            }
-
-            // Copy propagation
-            if optimizations.contains(&Optimization::CopyPropagation) {
-                for method in program.methods.values_mut() {
-                    copy_prop::propagate_copies(method);
-                }
             }
         }
     }
