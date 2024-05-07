@@ -312,6 +312,9 @@ pub mod gvnpre {
                         .or_insert(inst);
                 }
             } else {
+                if let Expression::Reg(iref) = expr {
+                    leaders[current_block.0].entry(value.clone()).or_insert(iref);
+                }
                 tmp_gen[current_block.0].insert(inst);
             }
             if let Expression::Phi(_) = expr {
