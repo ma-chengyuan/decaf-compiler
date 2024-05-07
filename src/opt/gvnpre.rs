@@ -649,7 +649,7 @@ pub mod gvnpre {
                         let instref = match leaders.get(&val) {
                             Some(inst) => *inst,
                             None => {
-                                println!("Inserting {:?} ({:?}) into {:?}", expr, val, pred);
+                                // println!("Inserting {:?} ({:?}) into {:?}", expr, val, pred);
                                 let inst = expr_to_inst(expr.clone(), leaders);
                                 let instref = method.next_inst(pred.clone(), inst.clone());
                                 let (value, _, _) = value_table.maybe_insert_inst(instref, &inst);
