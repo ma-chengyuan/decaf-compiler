@@ -20,10 +20,16 @@ pub mod gvnpre {
         Sub(Value, Value),
         Mul(Value, Value),
         Div(Value, Value),
+        Mod(Value, Value),
         Neg(Value),
         Not(Value),
         Copy(Value),
         LoadConst(Const),
+
+        Eq(Value, Value),
+        Neq(Value, Value),
+        Less(Value, Value),
+        LessEq(Value, Value),
 
         Reg(InstRef),
         Phi(HashMap<BlockRef, InstRef>),
@@ -35,10 +41,15 @@ pub mod gvnpre {
                 Expression::Sub(lhs, rhs) => vec![lhs.clone(), rhs.clone()],
                 Expression::Mul(lhs, rhs) => vec![lhs.clone(), rhs.clone()],
                 Expression::Div(lhs, rhs) => vec![lhs.clone(), rhs.clone()],
+                Expression::Mod(lhs, rhs) => vec![lhs.clone(), rhs.clone()],
                 Expression::Neg(operand) => vec![operand.clone()],
                 Expression::Not(operand) => vec![operand.clone()],
                 Expression::Copy(src) => vec![src.clone()],
                 Expression::LoadConst(_) => vec![],
+                Expression::Eq(lhs, rhs) => vec![lhs.clone(), rhs.clone()],
+                Expression::Neq(lhs, rhs) => vec![lhs.clone(), rhs.clone()],
+                Expression::Less(lhs, rhs) => vec![lhs.clone(), rhs.clone()],
+                Expression::LessEq(lhs, rhs) => vec![lhs.clone(), rhs.clone()],
                 Expression::Reg(_) => vec![],
                 Expression::Phi(_) => vec![],
             }
@@ -50,10 +61,15 @@ pub mod gvnpre {
                 Expression::Sub(..) => false,
                 Expression::Mul(..) => false,
                 Expression::Div(..) => false,
+                Expression::Mod(..) => false,
                 Expression::Neg(..) => false,
                 Expression::Not(..) => false,
                 Expression::Copy(..) => false,
                 Expression::LoadConst(_) => false,
+                Expression::Eq(..) => false,
+                Expression::Neq(..) => false,
+                Expression::Less(..) => false,
+                Expression::LessEq(..) => false,
                 Expression::Reg(_) => true,
                 Expression::Phi(_) => false,
             }
@@ -79,6 +95,9 @@ pub mod gvnpre {
         fn new_div(lhs: Value, rhs: Value) -> Self {
             Expression::Div(lhs, rhs)
         }
+        fn new_mod(lhs: Value, rhs: Value) -> Self {
+            Expression::Mod(lhs, rhs)
+        }
         fn new_neg(value: Value) -> Self {
             Expression::Neg(value)
         }
@@ -91,7 +110,24 @@ pub mod gvnpre {
         fn new_load_const(value: Const) -> Self {
             Expression::LoadConst(value)
         }
-
+        fn new_eq(lhs: Value, rhs: Value) -> Self {
+            Expression::Eq(
+                std::cmp::min(lhs.clone(), rhs.clone()),
+                std::cmp::max(lhs.clone(), rhs.clone()),
+            )
+        }
+        fn new_neq(lhs: Value, rhs: Value) -> Self {
+            Expression::Neq(
+                std::cmp::min(lhs.clone(), rhs.clone()),
+                std::cmp::max(lhs.clone(), rhs.clone()),
+            )
+        }
+        fn new_less(lhs: Value, rhs: Value) -> Self {
+            Expression::Less(lhs, rhs)
+        }
+        fn new_lesseq(lhs: Value, rhs: Value) -> Self {
+            Expression::LessEq(lhs, rhs)
+        }
         fn new_reg(value: InstRef) -> Self {
             Expression::Reg(value)
         }
@@ -133,6 +169,10 @@ pub mod gvnpre {
             self.map.get(&inst).unwrap().clone()
         }
 
+        pub fn expr_eq(&self, lhs: &Expression, rhs: &Expression) -> bool {
+            lhs == rhs
+        }
+
         pub fn lookup_expr(&mut self, expr: &Expression) -> (Value, bool) {
             if let Expression::Copy(src) = expr {
                 debug_assert!(src.0 < self._next_value);
@@ -141,7 +181,7 @@ pub mod gvnpre {
             match self
                 .values
                 .iter()
-                .find_map(|(k, v)| if k == expr { Some(v) } else { None })
+                .find_map(|(k, v)| if self.expr_eq(k, expr) { Some(v) } else { None })
             {
                 Some(index) => (index.clone(), false),
                 None => {
@@ -171,10 +211,25 @@ pub mod gvnpre {
                 Inst::Div(lhs, rhs) => {
                     Expression::new_div(self.lookup_inst(*lhs), self.lookup_inst(*rhs))
                 }
+                Inst::Mod(lhs, rhs) => {
+                    Expression::new_mod(self.lookup_inst(*lhs), self.lookup_inst(*rhs))
+                }
                 Inst::Neg(operand) => Expression::new_neg(self.lookup_inst(*operand)),
                 Inst::Not(operand) => Expression::new_not(self.lookup_inst(*operand)),
                 Inst::Copy(src) => Expression::new_copy(self.lookup_inst(*src)),
                 Inst::LoadConst(value) => Expression::new_load_const(value.clone()),
+                Inst::Eq(lhs, rhs) => {
+                    Expression::new_eq(self.lookup_inst(*lhs), self.lookup_inst(*rhs))
+                }
+                Inst::Neq(lhs, rhs) => {
+                    Expression::new_neq(self.lookup_inst(*lhs), self.lookup_inst(*rhs))
+                }
+                Inst::Less(lhs, rhs) => {
+                    Expression::new_less(self.lookup_inst(*lhs), self.lookup_inst(*rhs))
+                }
+                Inst::LessEq(lhs, rhs) => {
+                    Expression::new_lesseq(self.lookup_inst(*lhs), self.lookup_inst(*rhs))
+                }
                 Inst::Phi(values) => {
                     let phi = Expression::new_phi(values.clone());
                     phi
@@ -197,7 +252,7 @@ pub mod gvnpre {
             if let Some(index) =
                 self.values
                     .iter()
-                    .find_map(|(k, v)| if *k == expr { Some(v) } else { None })
+                    .find_map(|(k, v)| if self.expr_eq(k, &expr) { Some(v) } else { None })
             {
                 assert!(*index == value);
             } else {
@@ -456,10 +511,15 @@ pub mod gvnpre {
             Expression::Sub(lhs, rhs) => Inst::Sub(leader_map[&lhs], leader_map[&rhs]),
             Expression::Mul(lhs, rhs) => Inst::Mul(leader_map[&lhs], leader_map[&rhs]),
             Expression::Div(lhs, rhs) => Inst::Div(leader_map[&lhs], leader_map[&rhs]),
+            Expression::Mod(lhs, rhs) => Inst::Mod(leader_map[&lhs], leader_map[&rhs]),
             Expression::Neg(operand) => Inst::Neg(leader_map[&operand]),
             Expression::Not(operand) => Inst::Not(leader_map[&operand]),
             Expression::Copy(src) => Inst::Copy(leader_map[&src]),
             Expression::LoadConst(value) => Inst::LoadConst(value),
+            Expression::Eq(lhs, rhs) => Inst::Eq(leader_map[&lhs], leader_map[&rhs]),
+            Expression::Neq(lhs, rhs) => Inst::Neq(leader_map[&lhs], leader_map[&rhs]),
+            Expression::Less(lhs, rhs) => Inst::Less(leader_map[&lhs], leader_map[&rhs]),
+            Expression::LessEq(lhs, rhs) => Inst::LessEq(leader_map[&lhs], leader_map[&rhs]),
             Expression::Reg(_) => panic!("No instruction for Reg value"),
             Expression::Phi(_) => panic!("No instruction for Phi value"),
         }
