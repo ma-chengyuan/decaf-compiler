@@ -13,6 +13,7 @@ pub mod cse;
 pub mod dead_code;
 pub mod dom;
 pub mod function_inlining;
+pub mod loop_utils;
 pub mod ssa;
 
 // Common graph algorithms for control flow graphs.

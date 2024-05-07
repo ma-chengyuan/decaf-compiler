@@ -19,7 +19,9 @@ use crate::{
     },
     opt::{
         dom::{compute_dominance, Dominance},
-        for_each_successor, predecessors, reverse_postorder, split_critical_edges,
+        for_each_successor,
+        loop_utils::LoopAnalysis,
+        predecessors, reverse_postorder, split_critical_edges,
     },
     scan::location::Location,
 };
@@ -56,6 +58,8 @@ pub struct LoweredMethod {
     pub dom_tree: Vec<Vec<BlockRef>>,
     /// The predecessors of each block.
     pub predecessors: Vec<HashSet<BlockRef>>,
+    /// Loop analysis information.
+    pub loops: LoopAnalysis,
 
     /// Non-materialized arguments. An argument is not materialized if it does
     /// not reside in a register when the instruction using the argument is
@@ -88,11 +92,13 @@ impl LoweredMethod {
         let dom = compute_dominance(&method);
         let dom_tree = dom.dominator_tree();
         let predecessors = predecessors(&method);
+        let loops = LoopAnalysis::new(&method);
         LoweredMethod {
             method,
             dom,
             dom_tree,
             predecessors,
+            loops,
 
             max_reg: 0,
             spill_slots: HashMap::new(),
@@ -200,7 +206,7 @@ impl Assembler {
             let max_reg = REGS.len();
             // For debugging. Smaller max_reg pushes the spiller to limit where
             // more bugs are likely to be found.
-            // let max_reg = 4;
+            // let max_reg = 3;
             Spiller::new(&self.program, &mut lowered, max_reg).spill();
             RegAllocator::new(&self.program, &mut lowered).allocate();
             Self::coalesce(&mut lowered);

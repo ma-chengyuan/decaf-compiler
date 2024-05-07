@@ -130,11 +130,15 @@ impl Coalescer<InstRef> {
                 continue;
             }
             if let Inst::Phi(map) = inst {
-                for (_, src_ref) in map.iter() {
+                for (src_block, src_ref) in map.iter() {
                     if !gi.contains_node(*src_ref) {
                         continue;
                     }
-                    ga.add_edge(inst_ref, *src_ref, 1.0);
+                    ga.add_edge(
+                        inst_ref,
+                        *src_ref,
+                        1.0 * l.loops.get_freq(*src_block) as f64,
+                    );
                 }
             }
         }
