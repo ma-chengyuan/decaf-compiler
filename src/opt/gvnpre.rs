@@ -313,7 +313,9 @@ pub mod gvnpre {
                 }
             } else {
                 if let Expression::Reg(iref) = expr {
-                    leaders[current_block.0].entry(value.clone()).or_insert(iref);
+                    leaders[current_block.0]
+                        .entry(value.clone())
+                        .or_insert(iref);
                 }
                 tmp_gen[current_block.0].insert(inst);
             }
@@ -810,9 +812,29 @@ pub mod gvnpre {
         for (block, block_data) in method.iter_blocks() {
             for inst in block_data.insts.iter() {
                 let val = value_table.lookup_inst(inst);
-                if let Some(leader) = leaders[block.0].get(&val) {
-                    if leader != inst {
-                        changes.push((*inst, Inst::Copy(*leader)));
+                let mut ok = false;
+                let leader = leaders[block.0].get(&val).unwrap();
+                if leader != inst {
+                    changes.push((*inst, Inst::Copy(*leader)));
+                    ok = true;
+                }
+                // if let Some(leader) = leaders[block.0].get(&val) {
+                //     if leader != inst {
+                //         changes.push((*inst, Inst::Copy(*leader)));
+                //         ok = true;
+                //     }
+                // }
+
+                if !ok {
+                    if let Inst::Phi(phi) = method.inst(*inst) {
+                        let new_phi = phi.iter().map(|(pred, instref)| {
+                            let val = value_table.lookup_inst(instref);
+                            let leader = leaders[pred.0].get(&val).unwrap();
+                            (pred.clone(), *leader)
+                        }).collect::<HashMap<BlockRef, InstRef>>();
+                        if new_phi.ne(phi) {
+                            changes.push((*inst, Inst::Phi(new_phi)));
+                        }
                     }
                 }
             }
