@@ -13,6 +13,10 @@ use crate::inter::ir::{Inst, InstRef};
 
 use super::LoweredMethod;
 
+/// The time limit for the ILP solver in seconds.
+const HIGHS_TIME_LIMIT: f64 = 10.0; // 10 seconds / per function is pretty generous.
+const HIGHS_VERBOSE: bool = false; // Set to false to disable verbose output.
+
 pub struct Coalescer<T: NodeTrait> {
     /// The interference graph.
     gi: UnGraphMap<T, ()>,
@@ -20,6 +24,7 @@ pub struct Coalescer<T: NodeTrait> {
     ga: UnGraphMap<T, f64>,
 
     max_color: usize,
+    initial_solution: Option<HashMap<T, usize>>,
     colors: HashMap<T, usize>,
 }
 
@@ -139,6 +144,7 @@ impl Coalescer<InstRef> {
             ga,
             max_color: l.max_reg,
             colors: HashMap::new(),
+            initial_solution: Some(l.reg.clone()),
         }
     }
 
@@ -331,8 +337,27 @@ impl<T: NodeTrait + Debug> Coalescer<T> {
             }
         }
 
-        model = model.set_time_limit(10.0); // 10 seconds is pretty generous.
+        model = model.set_time_limit(HIGHS_TIME_LIMIT);
+        if let Some(solution) = &self.initial_solution {
+            let mut ilp_soln = HashMap::new();
+            for (v, color) in solution {
+                if let Some(vs) = x.get(v) {
+                    for (c, v) in vs.iter().enumerate() {
+                        ilp_soln.insert(*v, if c == *color { 1.0 } else { 0.0 });
+                    }
+                }
+            }
+            for ((i, j), y_ij) in y.iter() {
+                ilp_soln.insert(*y_ij, if solution[i] != solution[j] { 1.0 } else { 0.0 });
+            }
+            model = model.set_solution(ilp_soln.into_iter());
+        }
+        model.set_verbose(HIGHS_VERBOSE);
+        let start = std::time::Instant::now();
         let solution = model.solve()?;
+        if HIGHS_VERBOSE {
+            println!("ILP took {:?}", start.elapsed());
+        }
         let mut colors = HashMap::new();
         for (k, v) in x.iter() {
             let color = v
@@ -345,6 +370,9 @@ impl<T: NodeTrait + Debug> Coalescer<T> {
             if colors[&a] == colors[&b] {
                 return Err(ResolutionError::Infeasible);
             }
+        }
+        if HIGHS_VERBOSE {
+            println!("validated ILP solution");
         }
         self.colors = colors;
         Ok(solution.eval(&objective))
