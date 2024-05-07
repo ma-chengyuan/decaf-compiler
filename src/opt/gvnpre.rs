@@ -4,7 +4,7 @@ pub mod gvnpre {
             constant::Const,
             ir::{BlockRef, Inst, InstRef, Method, Terminator},
         },
-        opt::dom::compute_dominance,
+        opt::dom::compute_dominance, utils::show_graphviz,
     };
     use std::{
         collections::{HashMap, HashSet, LinkedList},
@@ -232,7 +232,7 @@ pub mod gvnpre {
         let mut added_vals = HashSet::new();
         for inst in method.block(current_block).insts.clone() {
             let (value, expr, okay) = value_table.maybe_insert_inst(inst, method.inst(inst));
-            leaders[current_block.0].insert(value.clone(), inst);
+            leaders[current_block.0].entry(value.clone()).or_insert(inst);
             if okay {
                 if let Expression::Phi(_) = expr {
                     phi_gen[current_block.0].insert(value.clone(), inst);
@@ -602,7 +602,9 @@ pub mod gvnpre {
             }
 
             for child in dom_tree[block.0].iter() {
-                added_leaders[child.0] = added_leaders[block.0].clone();
+                for (k, v) in added_leaders[block.0].clone().iter() {
+                    added_leaders[child.0].insert(k.clone(), v.clone());
+                }
                 insert_recursive(
                     child.clone(),
                     dom_tree,
@@ -671,12 +673,13 @@ pub mod gvnpre {
     }
 
     pub fn perform_gvnpre(method: &mut Method) {
-        let (preds, succs, mut leaders, mut antic_in, phi_gen, mut value_table) =
+        // show_graphviz(&method.dump_graphviz());
+        let (preds, succs, mut leaders, mut antic_in, _phi_gen, mut value_table) =
             build_sets(method);
 
         // println! {"leaders: \n{:?}\n", leaders};
         // println! {"antic_in: \n{:?}\n", antic_in};
-        // println! {"phi_gen: \n{:?}\n", phi_gen};
+        // // println! {"phi_gen: \n{:?}\n", phi_gen};
         // println! {"value_table: \n{:?}\n", value_table};
 
         perform_insert(
@@ -694,5 +697,6 @@ pub mod gvnpre {
 
         perform_eliminate(method, &mut leaders, &mut value_table);
         // println!("Finished perform_gvnpre");
+        // show_graphviz(&method.dump_graphviz());
     }
 }
