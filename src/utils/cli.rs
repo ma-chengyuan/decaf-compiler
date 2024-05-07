@@ -32,6 +32,10 @@ pub enum Optimization {
     ArraySplitting,
     #[clap(name = "inline")]
     FunctionInlining,
+    #[clap(name = "rgae")]
+    RedundantGlobalAndArrayAccessElimination,
+    #[clap(name = "licm")]
+    LoopInvariantCodeMotion,
     #[clap(name = "gvnpre")]
     GVNPRE,
     #[clap(name = "all")]

@@ -13,6 +13,9 @@ pub mod cse;
 pub mod dead_code;
 pub mod dom;
 pub mod function_inlining;
+pub mod licm;
+pub mod loop_utils;
+pub mod rgae;
 pub mod gvnpre;
 pub mod ssa;
 
@@ -159,6 +162,8 @@ pub fn optimize(mut program: Program, optimizations: &[Optimization]) -> Program
             Optimization::ConstantFolding,
             // Optimization::ArraySplitting,
             Optimization::FunctionInlining,
+            Optimization::RedundantGlobalAndArrayAccessElimination,
+            Optimization::LoopInvariantCodeMotion,
         ]);
     }
 
@@ -201,6 +206,18 @@ pub fn optimize(mut program: Program, optimizations: &[Optimization]) -> Program
             }
         }
 
+        if optimizations.contains(&Optimization::RedundantGlobalAndArrayAccessElimination) {
+            for method in program.methods.values_mut() {
+                rgae::eliminate_redundant_global_and_array_access(method);
+            }
+        }
+
+        if optimizations.contains(&Optimization::LoopInvariantCodeMotion) {
+            for method in program.methods.values_mut() {
+                licm::loop_invariant_code_motion(method);
+            }
+        }
+
         // Dead code elimination
         if optimizations.contains(&Optimization::DeadCodeElimination) {
             for method in program.methods.values_mut() {
@@ -215,17 +232,9 @@ pub fn optimize(mut program: Program, optimizations: &[Optimization]) -> Program
         }
     }
 
-    // let mut ls = vec![];
-    // for (name, method) in program.methods.iter() {
-    //     // println!("{}:", name);
-    //     let max_reg = 3;
-    //     let mut lowered = crate::assembler::spill::Spiller::new(&program, method, max_reg).spill();
-    //     crate::assembler::regalloc::RegAllocator::new(&program, &mut lowered, max_reg).allocate();
-    //     ls.push(lowered);
+    // for method in program.methods.values_mut() {
+    //     crate::utils::show_graphviz(&method.dump_graphviz());
     // }
-    // let mut assembler = crate::assembler::Assembler::new(program.clone());
-    // let _output = assembler.assemble_lowered("test.S", ls);
-    // println!("{}", output);
 
     // Destruct SSA form
     // program.methods = program

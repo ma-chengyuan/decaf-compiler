@@ -155,7 +155,7 @@ impl<'a> Spiller<'a> {
                 let mut stack = Vec::new();
                 stack.push(*pred);
                 while let Some(block) = stack.pop() {
-                    if !this_body.insert(block) {
+                    if this_body.insert(block) {
                         stack.extend(self.l.predecessors[block.0].iter().cloned());
                     }
                 }
