@@ -2,14 +2,13 @@ pub mod gvnpre {
     use crate::{
         inter::{
             constant::Const,
-            ir::{Block, BlockRef, Inst, InstRef, Method, Terminator},
+            ir::{BlockRef, Inst, InstRef, Method, Terminator},
         },
         opt::dom::compute_dominance,
     };
     use std::{
         collections::{HashMap, HashSet, LinkedList},
         hash::Hash,
-        path::Ancestors,
     };
 
     #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -190,9 +189,9 @@ pub mod gvnpre {
             (value, expr, okay)
         }
 
-        pub fn get_value(&self, inst: InstRef) -> Option<&Value> {
-            self.map.get(&inst)
-        }
+        // pub fn get_value(&self, inst: InstRef) -> Option<&Value> {
+        //     self.map.get(&inst)
+        // }
 
         pub fn tie_expr(&mut self, expr: Expression, value: Value) {
             if let Some(index) =
@@ -282,16 +281,13 @@ pub mod gvnpre {
     }
 
     fn build_sets_phase2(
-        method: &mut Method,
         block: BlockRef,
-        preds: &Vec<Vec<BlockRef>>,
         succs: &Vec<Vec<BlockRef>>,
         exp_gen: &Vec<LinkedList<(Value, Expression)>>,
         tmp_gen: &Vec<HashSet<InstRef>>,
         antic_in: &mut AntileaderSet,
         value_table: &mut ValueTable,
     ) -> bool {
-        let preds = &preds[block.0];
         let succs = &succs[block.0];
         let mut result = LinkedList::new();
         if succs.len() == 1 {
@@ -304,7 +300,7 @@ pub mod gvnpre {
             for succ in succs.iter().skip(1) {
                 // Perform intersection one by one
                 let mut hashset = HashSet::new();
-                for (value, expr) in antic_in[succ.0].iter() {
+                for (value, _) in antic_in[succ.0].iter() {
                     hashset.insert(value);
                 }
 
@@ -434,9 +430,7 @@ pub mod gvnpre {
             qidx += 1;
 
             let changed = build_sets_phase2(
-                method,
                 block,
-                &preds,
                 &succs,
                 &exp_gen,
                 &tmp_gen,
@@ -699,6 +693,6 @@ pub mod gvnpre {
         // println! {"value_table: \n{:?}\n", value_table};
 
         perform_eliminate(method, &mut leaders, &mut value_table);
-        println!("Finished perform_gvnpre");
+        // println!("Finished perform_gvnpre");
     }
 }
