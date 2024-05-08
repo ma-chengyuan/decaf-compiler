@@ -1,9 +1,9 @@
-use std::{collections::HashSet};
+use std::collections::HashSet;
 
 use crate::{
     inter::ir::{BlockRef, Inst, Method, Program, Terminator},
     opt::ssa::construct_ssa,
-    utils::{cli::Optimization, show_graphviz},
+    utils::cli::Optimization,
 };
 
 pub mod array_dse;
@@ -14,10 +14,10 @@ pub mod cse;
 pub mod dead_code;
 pub mod dom;
 pub mod function_inlining;
+pub mod gvnpre;
 pub mod licm;
 pub mod loop_utils;
 pub mod rgae;
-pub mod gvnpre;
 pub mod ssa;
 pub mod unroll;
 
@@ -160,7 +160,7 @@ pub fn optimize(mut program: Program, optimizations: &[Optimization]) -> Program
             Optimization::GVNPRE,
             Optimization::CopyPropagation,
             Optimization::DeadCodeElimination,
-            Optimization::CommonSubexpressionElimination,
+            // Optimization::CommonSubexpressionElimination,
             Optimization::ConstantFolding,
             // Optimization::ArraySplitting,
             Optimization::FunctionInlining,
@@ -211,7 +211,7 @@ pub fn optimize(mut program: Program, optimizations: &[Optimization]) -> Program
         if optimizations.contains(&Optimization::GVNPRE) {
             for method in program.methods.values_mut() {
                 *method = split_critical_edges(method);
-                gvnpre::gvnpre::perform_gvnpre(method);
+                gvnpre::perform_gvnpre(method);
             }
         }
 
