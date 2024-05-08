@@ -6,6 +6,7 @@ use crate::{
     utils::{cli::Optimization, show_graphviz},
 };
 
+pub mod array_dse;
 pub mod array_split;
 pub mod constant_folding;
 pub mod copy_prop;
@@ -18,6 +19,7 @@ pub mod loop_utils;
 pub mod rgae;
 pub mod gvnpre;
 pub mod ssa;
+pub mod unroll;
 
 // Common graph algorithms for control flow graphs.
 
@@ -163,7 +165,9 @@ pub fn optimize(mut program: Program, optimizations: &[Optimization]) -> Program
             // Optimization::ArraySplitting,
             Optimization::FunctionInlining,
             Optimization::RedundantGlobalAndArrayAccessElimination,
-            Optimization::LoopInvariantCodeMotion,
+            Optimization::DeadArrayStoreElimination,
+            Optimization::LoopUnrolling,
+            // Optimization::LoopInvariantCodeMotion,
         ]);
     }
 
@@ -177,6 +181,11 @@ pub fn optimize(mut program: Program, optimizations: &[Optimization]) -> Program
     }
 
     for _ in 0..10 {
+        if optimizations.contains(&Optimization::LoopUnrolling) {
+            for method in program.methods.values_mut() {
+                unroll::unroll_loops(method);
+            }
+        }
         // Constant folding
         if optimizations.contains(&Optimization::ConstantFolding) {
             for method in program.methods.values_mut() {
@@ -218,6 +227,12 @@ pub fn optimize(mut program: Program, optimizations: &[Optimization]) -> Program
             }
         }
 
+        if optimizations.contains(&Optimization::DeadArrayStoreElimination) {
+            for method in program.methods.values_mut() {
+                array_dse::eliminate_dead_array_stores(method);
+            }
+        }
+
         // Dead code elimination
         if optimizations.contains(&Optimization::DeadCodeElimination) {
             for method in program.methods.values_mut() {
@@ -233,7 +248,16 @@ pub fn optimize(mut program: Program, optimizations: &[Optimization]) -> Program
     }
 
     // for method in program.methods.values_mut() {
-    //     crate::utils::show_graphviz(&method.dump_graphviz());
+    //     if method.name.inner.as_ref() == "main" {
+    //         crate::utils::show_graphviz(&method.dump_graphviz());
+    //         // unroll::unroll_loops(method);
+    //         // crate::utils::show_graphviz(&method.dump_graphviz());
+    //         // array_dse::eliminate_dead_array_stores(method);
+    //         // crate::utils::show_graphviz(&method.dump_graphviz());
+    //     }
+    // }
+
+    // for method in program.methods.values_mut() {
     // }
 
     // Destruct SSA form

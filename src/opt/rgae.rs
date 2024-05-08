@@ -14,7 +14,9 @@ use crate::inter::{
 };
 
 use super::{
-    copy_prop::propagate_copies, dom::compute_dominance, for_each_successor, predecessors,
+    copy_prop::propagate_copies,
+    dom::{compute_dominance, Dominance},
+    for_each_successor, predecessors, reverse_postorder,
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -60,21 +62,21 @@ struct Analyzer<'a> {
     predecessors: Vec<HashSet<BlockRef>>,
     avail_in: Vec<AvailGlobalAndArrays>,
     avail_out: Vec<AvailGlobalAndArrays>,
+    dom: Dominance,
 }
 
 impl<'a> Analyzer<'a> {
     fn update_all_blocks(&mut self) {
-        let dom = compute_dominance(self.method);
-        let postorder = dom.preorder(self.method.entry);
         let mut q = VecDeque::new();
         let mut in_queue = vec![false; self.method.n_blocks()];
-        for block in postorder {
+        for block in reverse_postorder(self.method) {
             q.push_back(block);
             in_queue[block.0] = true;
+            self.update_avail_block(block, true);
         }
         while let Some(block) = q.pop_front() {
             in_queue[block.0] = false;
-            if self.update_avail_block(block) {
+            if self.update_avail_block(block, false) {
                 for_each_successor(self.method, block, |succ| {
                     if !in_queue[succ.0] {
                         q.push_back(succ);
@@ -94,7 +96,10 @@ impl<'a> Analyzer<'a> {
                 avail.global_scalars.insert(global.clone(), *value);
             }
             Inst::Load(Address::Global(global)) => {
-                avail.global_scalars.insert(global.clone(), inst_ref);
+                avail
+                    .global_scalars
+                    .entry(global.clone())
+                    .or_insert(inst_ref);
             }
             Inst::Call { .. } => {
                 // Be conservative and assume that all global variables are clobbered by a call.
@@ -110,10 +115,10 @@ impl<'a> Analyzer<'a> {
                 };
                 match self.method.inst(*index) {
                     Inst::LoadConst(Const::Int(i)) => {
-                        a.consts.insert(*i, inst_ref);
+                        a.consts.entry(*i).or_insert(inst_ref);
                     }
                     _ => {
-                        a.vars.insert(*index, inst_ref);
+                        a.vars.entry(*index).or_insert(inst_ref);
                     }
                 }
             }
@@ -140,9 +145,13 @@ impl<'a> Analyzer<'a> {
         }
     }
 
-    fn update_avail_block(&mut self, block_ref: BlockRef) -> bool {
+    fn update_avail_block(&mut self, block_ref: BlockRef, warmup: bool) -> bool {
         let mut avail = None;
         for pred in self.predecessors[block_ref.0].iter().copied() {
+            if warmup && self.dom.dominates(block_ref, pred) {
+                // Ignore back edges during warmup.
+                continue;
+            }
             let pred_avail = &self.avail_out[pred.0];
             avail = match avail {
                 None => Some(pred_avail.clone()),
@@ -215,6 +224,7 @@ impl<'a> Analyzer<'a> {
 pub fn eliminate_redundant_global_and_array_access(method: &mut Method) {
     let mut analyzer = Analyzer {
         predecessors: predecessors(method),
+        dom: compute_dominance(method),
         avail_in: vec![AvailGlobalAndArrays::default(); method.n_blocks()],
         avail_out: vec![AvailGlobalAndArrays::default(); method.n_blocks()],
         method,

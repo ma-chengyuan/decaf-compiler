@@ -38,6 +38,10 @@ pub enum Optimization {
     LoopInvariantCodeMotion,
     #[clap(name = "gvnpre")]
     GVNPRE,
+    #[clap(name = "dase")]
+    DeadArrayStoreElimination,
+    #[clap(name = "unroll")]
+    LoopUnrolling,
     #[clap(name = "all")]
     All,
 }
