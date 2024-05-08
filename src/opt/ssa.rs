@@ -398,3 +398,42 @@ pub fn destruct_ssa(program: &Program, method: &Method) -> Method {
     }
     new_method
 }
+
+/// If a phi has only one argument that is not itself, it can simplified to a
+/// copy.
+pub fn simplify_phis(method: &mut Method) {
+    for block_ref in method.iter_block_refs() {
+        let mut reduced: Vec<InstRef> = vec![];
+        let mut first_non_phi = method.block(block_ref).insts.len();
+        for (i, inst_ref) in method
+            .block(block_ref)
+            .insts
+            .clone()
+            .into_iter()
+            .enumerate()
+        {
+            let inst = method.inst_mut(inst_ref);
+            if let Inst::Phi(map) = inst {
+                let not_itself: Vec<_> = map
+                    .iter()
+                    .filter(|(_, var)| **var != inst_ref)
+                    .map(|(_, var)| *var)
+                    .collect();
+                if not_itself.len() == 1 {
+                    *inst = Inst::Copy(not_itself[0]);
+                    reduced.push(inst_ref);
+                }
+            } else {
+                first_non_phi = i;
+                break;
+            }
+        }
+        if reduced.is_empty() {
+            continue;
+        }
+        let insts = &mut method.block_mut(block_ref).insts;
+        insts.retain(|inst_ref| !reduced.contains(inst_ref));
+        first_non_phi -= reduced.len();
+        insts.splice(first_non_phi..first_non_phi, reduced);
+    }
+}

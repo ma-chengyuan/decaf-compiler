@@ -144,8 +144,8 @@ fn find_unroll_target(method: &Method, loops: &LoopAnalysis) -> Option<(Rc<RefCe
             continue;
         }
         // println!(
-        //     "{} -> {} step {} ({})",
-        //     initial_value, exit_value, increment, trip_count
+        //     "{}, {} -> {} step {} ({})",
+        //     header_ref, initial_value, exit_value, increment, trip_count
         // );
         return Some((loops.get_loop(header_ref).unwrap(), trip_count as usize));
     }

@@ -215,6 +215,10 @@ pub fn optimize(mut program: Program, optimizations: &[Optimization]) -> Program
             }
         }
 
+        for method in program.methods.values_mut() {
+            ssa::simplify_phis(method);
+        }
+
         if optimizations.contains(&Optimization::RedundantGlobalAndArrayAccessElimination) {
             for method in program.methods.values_mut() {
                 rgae::eliminate_redundant_global_and_array_access(method);
@@ -248,7 +252,7 @@ pub fn optimize(mut program: Program, optimizations: &[Optimization]) -> Program
     }
 
     // for method in program.methods.values_mut() {
-    //     if method.name.inner.as_ref() == "main" {
+    //     if method.name.inner.as_ref() == "gaussian_blur" {
     //         crate::utils::show_graphviz(&method.dump_graphviz());
     //         // unroll::unroll_loops(method);
     //         // crate::utils::show_graphviz(&method.dump_graphviz());
