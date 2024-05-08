@@ -692,57 +692,8 @@ impl<'a> MethodAssembler<'a> {
                             self.reg(inst_ref)
                         ));
                     }
-                    Inst::Add(lhs, rhs) | Inst::Sub(lhs, rhs) | Inst::Mul(lhs, rhs) => {
-                        let asm_inst = match inst {
-                            Inst::Add(_, _) => "addq",
-                            Inst::Sub(_, _) => "subq",
-                            Inst::Mul(_, _) => "imulq",
-                            _ => unreachable!(),
-                        };
-                        let dst_reg = self.reg(inst_ref);
-                        match (self.arg(*inst_ref, *lhs), self.arg(*inst_ref, *rhs)) {
-                            (AsmArg::Imm(l), AsmArg::Imm(r)) => {
-                                // This really should have been handled by constant propagation.
-                                let v = match inst {
-                                    Inst::Add(_, _) => l + r,
-                                    Inst::Sub(_, _) => l - r,
-                                    Inst::Mul(_, _) => l * r,
-                                    _ => unreachable!(),
-                                };
-                                self.emit_code(format!("movq ${}, {}", v, dst_reg));
-                            }
-                            (AsmArg::Imm(l), AsmArg::Reg(r)) => {
-                                // TODO: imul has special instructions for immediate operands
-                                if r != dst_reg {
-                                    self.emit_code(format!("movq {}, {}", r, dst_reg));
-                                }
-                                self.emit_code(format!("{} ${}, {}", asm_inst, l, dst_reg));
-                                if let Inst::Sub(_, _) = inst {
-                                    self.emit_code(format!("negq {}", dst_reg));
-                                }
-                            }
-                            (AsmArg::Reg(l), AsmArg::Imm(r)) => {
-                                // TODO: imul has special instructions for immediate operands
-                                if l != dst_reg {
-                                    self.emit_code(format!("movq {}, {}", l, dst_reg));
-                                }
-                                self.emit_code(format!("{} ${}, {}", asm_inst, r, dst_reg));
-                            }
-                            (AsmArg::Reg(l), AsmArg::Reg(r)) => {
-                                if l == dst_reg {
-                                    self.emit_code(format!("{} {}, {}", asm_inst, r, dst_reg));
-                                } else if r == dst_reg {
-                                    self.emit_code(format!("{} {}, {}", asm_inst, l, dst_reg));
-                                    if let Inst::Sub(_, _) = inst {
-                                        self.emit_code(format!("negq {}", dst_reg));
-                                    }
-                                } else {
-                                    self.emit_code(format!("movq {}, {}", l, dst_reg));
-                                    self.emit_code(format!("{} {}, {}", asm_inst, r, dst_reg));
-                                }
-                            }
-                            _ => unimplemented!(),
-                        }
+                    Inst::Add(_, _) | Inst::Sub(_, _) | Inst::Mul(_, _) => {
+                        self.emit_add_sub_mul(*inst_ref);
                     }
                     Inst::Div(lhs, rhs) | Inst::Mod(lhs, rhs) => {
                         // println!("{:?}", self.l.reg);
@@ -937,6 +888,76 @@ impl<'a> MethodAssembler<'a> {
             self.emit_terminator(block_ref);
         }
         self.flush_bounds_check();
+    }
+
+    fn emit_add_sub_mul(&mut self, inst_ref: InstRef) {
+        let inst = self.l.method.inst(inst_ref);
+        let (lhs, rhs, asm_inst) = match inst {
+            Inst::Add(lhs, rhs) => (lhs, rhs, "addq"),
+            Inst::Sub(lhs, rhs) => (lhs, rhs, "subq"),
+            Inst::Mul(lhs, rhs) => (lhs, rhs, "imulq"),
+            _ => unreachable!(),
+        };
+        let dst_reg = self.reg(inst_ref);
+        match (self.arg(inst_ref, *lhs), self.arg(inst_ref, *rhs)) {
+            (AsmArg::Imm(l), AsmArg::Imm(r)) => {
+                // This really should have been handled by constant propagation.
+                let v = match inst {
+                    Inst::Add(_, _) => l + r,
+                    Inst::Sub(_, _) => l - r,
+                    Inst::Mul(_, _) => l * r,
+                    _ => unreachable!(),
+                };
+                self.emit_code(format!("movq ${}, {}", v, dst_reg));
+            }
+            (AsmArg::Imm(l), AsmArg::Reg(r)) => {
+                // TODO: imul has special instructions for immediate operands
+                if r != dst_reg {
+                    if i32::MIN as i64 <= l && l <= i32::MAX as i64 && asm_inst == "addq" {
+                        self.emit_code(format!("leaq {}({}), {}", l, r, dst_reg));
+                        return;
+                    }
+                    self.emit_code(format!("movq {}, {}", r, dst_reg));
+                }
+                self.emit_code(format!("{} ${}, {}", asm_inst, l, dst_reg));
+                if let Inst::Sub(_, _) = inst {
+                    self.emit_code(format!("negq {}", dst_reg));
+                }
+            }
+            (AsmArg::Reg(l), AsmArg::Imm(r)) => {
+                // TODO: imul has special instructions for immediate operands
+                if l != dst_reg {
+                    if i32::MIN as i64 <= r && r <= i32::MAX as i64 && asm_inst == "addq" {
+                        self.emit_code(format!("leaq {}({}), {}", r, l, dst_reg));
+                        return;
+                    }
+                    if i32::MIN as i64 <= -r && -r <= i32::MAX as i64 && asm_inst == "subq" {
+                        self.emit_code(format!("leaq {}({}), {}", -r, l, dst_reg));
+                        return;
+                    }
+                    self.emit_code(format!("movq {}, {}", l, dst_reg));
+                }
+                self.emit_code(format!("{} ${}, {}", asm_inst, r, dst_reg));
+            }
+            (AsmArg::Reg(l), AsmArg::Reg(r)) => {
+                if l == dst_reg {
+                    self.emit_code(format!("{} {}, {}", asm_inst, r, dst_reg));
+                } else if r == dst_reg {
+                    self.emit_code(format!("{} {}, {}", asm_inst, l, dst_reg));
+                    if let Inst::Sub(_, _) = inst {
+                        self.emit_code(format!("negq {}", dst_reg));
+                    }
+                } else {
+                    if asm_inst == "addq" {
+                        self.emit_code(format!("leaq ({},{}), {}", l, r, dst_reg));
+                        return;
+                    }
+                    self.emit_code(format!("movq {}, {}", l, dst_reg));
+                    self.emit_code(format!("{} {}, {}", asm_inst, r, dst_reg));
+                }
+            }
+            _ => unimplemented!(),
+        }
     }
 
     fn emit_par_reg_copies(&mut self, par_copies: HashSet<(usize, usize)>) {
