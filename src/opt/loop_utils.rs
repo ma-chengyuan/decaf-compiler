@@ -152,9 +152,19 @@ impl LoopAnalysis {
             .copied()
             .collect::<Vec<_>>();
         if external_preds.len() == 1 {
-            // If we have a single external predecessor, we can use it as the
-            // preheader.
-            return external_preds[0];
+            let pred = external_preds[0];
+            let mut other_successors = false;
+            for_each_successor(method, pred, |succ| {
+                if succ != block_ref {
+                    other_successors = true;
+                }
+            });
+            if !other_successors {
+                // If we have a single external predecessor, and that
+                // predecessor has the header block as the only successor we can
+                // use it as the preheader.
+                return pred;
+            }
         }
         let preheader_ref = method.next_block();
         method.block_mut(preheader_ref).term = Terminator::Jump(block_ref);
@@ -165,24 +175,30 @@ impl LoopAnalysis {
                 }
             });
         }
-        for phi_ref in method.phis(block_ref) {
-            let Inst::Phi(map) = method.inst(phi_ref) else {
-                unreachable!();
-            };
-            let new_phi = method.next_inst(
-                preheader_ref,
-                Inst::Phi(
-                    map.iter()
-                        .filter(|(src, _)| !loop_body.contains(src))
-                        .map(|(src, dst)| (*src, *dst))
-                        .collect(),
-                ),
-            );
-            let Inst::Phi(map) = method.inst_mut(phi_ref) else {
-                unreachable!();
-            };
-            map.retain(|src, _| loop_body.contains(src));
-            map.insert(preheader_ref, new_phi);
+        self.predecessors[block_ref.0].retain(|pred| loop_body.contains(pred));
+        self.predecessors[block_ref.0].insert(preheader_ref);
+        self.predecessors
+            .push(external_preds.iter().copied().collect());
+        if external_preds.len() > 1 {
+            for phi_ref in method.phis(block_ref) {
+                let Inst::Phi(map) = method.inst(phi_ref) else {
+                    unreachable!();
+                };
+                let new_phi = method.next_inst(
+                    preheader_ref,
+                    Inst::Phi(
+                        map.iter()
+                            .filter(|(src, _)| !loop_body.contains(src))
+                            .map(|(src, dst)| (*src, *dst))
+                            .collect(),
+                    ),
+                );
+                let Inst::Phi(map) = method.inst_mut(phi_ref) else {
+                    unreachable!();
+                };
+                map.retain(|src, _| loop_body.contains(src));
+                map.insert(preheader_ref, new_phi);
+            }
         }
         if let Some(parent) = &loop_.borrow().parent {
             parent.borrow_mut().body.insert(preheader_ref);
