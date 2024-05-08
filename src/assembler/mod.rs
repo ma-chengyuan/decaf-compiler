@@ -685,31 +685,23 @@ impl<'a> MethodAssembler<'a> {
                 }
                 match inst {
                     Inst::Phi(_) | Inst::PhiMem { .. } => continue, // They are taken care of elsewhere!
-                    Inst::Copy(src) => {
-                        self.emit_code(format!(
-                            "movq {}, {}",
-                            self.arg(*inst_ref, *src),
-                            self.reg(inst_ref)
-                        ));
-                    }
+                    Inst::Copy(src) => match self.arg(*inst_ref, *src) {
+                        AsmArg::Imm(x) if x < i32::MIN as i64 || x > i32::MAX as i64 => {
+                            self.emit_code(format!("movabsq ${}, {}", x, self.reg(inst_ref)));
+                        }
+                        arg => {
+                            self.emit_code(format!("movq {}, {}", arg, self.reg(inst_ref)));
+                        }
+                    },
                     Inst::Add(_, _) | Inst::Sub(_, _) | Inst::Mul(_, _) => {
                         self.emit_add_sub_mul(*inst_ref);
                     }
-                    Inst::Div(lhs, rhs) | Inst::Mod(lhs, rhs) => {
-                        // println!("{:?}", self.l.reg);
+                    Inst::Div(_, _) => self.emit_div(*inst_ref),
+                    Inst::Mod(lhs, rhs) => {
                         self.emit_code(format!("movq {}, %rax", self.reg(lhs)));
-                        self.emit_code("cqto"); // Godbolt does it
+                        self.emit_code("cqto"); // Sign-extend %rax into %rdx
                         self.emit_code(format!("idivq {}", self.reg(rhs)));
-                        // TODO: idivq taints rdx and rax!
-                        self.emit_code(format!(
-                            "movq {}, {}",
-                            match inst {
-                                Inst::Div(_, _) => "%rax",
-                                Inst::Mod(_, _) => "%rdx",
-                                _ => unreachable!(),
-                            },
-                            self.reg(inst_ref)
-                        ));
+                        self.emit_code(format!("movq %rdx, {}", self.reg(inst_ref)));
                     }
                     Inst::Neg(var) => {
                         if self.l.reg[var] != self.l.reg[inst_ref] {
@@ -911,10 +903,14 @@ impl<'a> MethodAssembler<'a> {
                 self.emit_code(format!("movq ${}, {}", v, dst_reg));
             }
             (AsmArg::Imm(l), AsmArg::Reg(r)) => {
-                // TODO: imul has special instructions for immediate operands
                 if r != dst_reg {
                     if i32::MIN as i64 <= l && l <= i32::MAX as i64 && asm_inst == "addq" {
                         self.emit_code(format!("leaq {}({}), {}", l, r, dst_reg));
+                        return;
+                    }
+                    if i32::MIN as i64 <= l && l <= i32::MAX as i64 && asm_inst == "imulq" {
+                        // Use the three-operand form of imulq
+                        self.emit_code(format!("imulq ${}, {}, {}", l, r, dst_reg));
                         return;
                     }
                     self.emit_code(format!("movq {}, {}", r, dst_reg));
@@ -925,7 +921,6 @@ impl<'a> MethodAssembler<'a> {
                 }
             }
             (AsmArg::Reg(l), AsmArg::Imm(r)) => {
-                // TODO: imul has special instructions for immediate operands
                 if l != dst_reg {
                     if i32::MIN as i64 <= r && r <= i32::MAX as i64 && asm_inst == "addq" {
                         self.emit_code(format!("leaq {}({}), {}", r, l, dst_reg));
@@ -933,6 +928,11 @@ impl<'a> MethodAssembler<'a> {
                     }
                     if i32::MIN as i64 <= -r && -r <= i32::MAX as i64 && asm_inst == "subq" {
                         self.emit_code(format!("leaq {}({}), {}", -r, l, dst_reg));
+                        return;
+                    }
+                    if i32::MIN as i64 <= r && r <= i32::MAX as i64 && asm_inst == "imulq" {
+                        // Use the three-operand form of imulq
+                        self.emit_code(format!("imulq ${}, {}, {}", r, l, dst_reg));
                         return;
                     }
                     self.emit_code(format!("movq {}, {}", l, dst_reg));
@@ -957,6 +957,73 @@ impl<'a> MethodAssembler<'a> {
                 }
             }
             _ => unimplemented!(),
+        }
+    }
+
+    fn emit_div(&mut self, inst_ref: InstRef) {
+        let Inst::Div(lhs, rhs) = self.l.method.inst(inst_ref) else {
+            unreachable!();
+        };
+        let dst_reg = self.reg(inst_ref);
+        match (self.arg(inst_ref, *lhs), self.arg(inst_ref, *rhs)) {
+            (AsmArg::Imm(a), AsmArg::Imm(b)) => {
+                self.emit_code(format!("movq {}, {}", a / b, dst_reg));
+            }
+            (lhs @ (AsmArg::Imm(_) | AsmArg::Reg(_)), rhs @ AsmArg::Reg(_)) => {
+                self.emit_code(format!("movq {}, %rax", lhs));
+                self.emit_code("cqto"); // Sign-extend %rax into %rdx
+                self.emit_code(format!("idivq {}", rhs));
+                self.emit_code(format!("movq %rax, {}", dst_reg));
+            }
+            (lhs @ AsmArg::Reg(_), AsmArg::Imm(d)) => {
+                let lhs_reg = format!("{}", lhs);
+                match d {
+                    0 => {} // UB
+                    1 | -1 => {
+                        if lhs_reg != dst_reg {
+                            self.emit_code(format!("movq {}, {}", lhs_reg, dst_reg));
+                        }
+                        if d == -1 {
+                            self.emit_code(format!("negq {}", dst_reg));
+                        }
+                    }
+                    d if d & (d - 1) == 0 => {
+                        // d is a power of 2
+                        let shift = d.trailing_zeros();
+                        if lhs_reg != dst_reg {
+                            self.emit_code(format!("movq {}, {}", lhs_reg, dst_reg));
+                        }
+                        self.emit_code(format!("sarq ${}, {}", shift, dst_reg));
+                    }
+                    d => {
+                        // See "Division by Invariant Integers using
+                        // Multiplication", by Granlund and Montgomery, sec. 5.
+                        use num_bigint::BigInt;
+
+                        let d_abs = d.abs();
+                        let log2_d_ceil = 64 - (d_abs - 1).leading_zeros();
+                        let l = log2_d_ceil.max(1);
+                        let m = 1 + (BigInt::from(1) << (63 + l)) / d_abs;
+                        let m_ = i64::try_from(m - (BigInt::from(1) << 64)).unwrap();
+
+                        self.emit_code(format!("movabsq ${}, %rax", m_));
+                        self.emit_code(format!("imulq {}", lhs_reg));
+                        self.emit_code(format!("addq {}, %rdx", lhs_reg));
+                        if l - 1 > 0 {
+                            self.emit_code(format!("sarq ${}, %rdx", l - 1));
+                        }
+                        if lhs_reg != dst_reg {
+                            self.emit_code(format!("movq {}, {}", lhs_reg, dst_reg));
+                        }
+                        self.emit_code(format!("shrq $63, {}", dst_reg));
+                        self.emit_code(format!("addq %rdx, {}", dst_reg));
+                        if d < 0 {
+                            self.emit_code(format!("negq {}", dst_reg));
+                        }
+                    }
+                }
+            }
+            _ => unreachable!(),
         }
     }
 
@@ -1226,3 +1293,34 @@ impl<'a> MethodAssembler<'a> {
         }
     }
 }
+
+// Test the fast division algorithm
+// pub fn test_div(d: i64) {
+//     use num_bigint::BigInt;
+//     use rand::prelude::*;
+
+//     let d_abs = d.abs();
+//     let log2_d_ceil = 64 - (d_abs - 1).leading_zeros();
+//     let l = log2_d_ceil.max(1);
+//     let m = 1 + (BigInt::from(1) << (63 + l)) / d_abs;
+//     let m_ = i64::try_from(m - (BigInt::from(1) << 64)).unwrap();
+
+//     let mulsh = |n: i64| i64::try_from((BigInt::from(m_) * n) >> 64).unwrap();
+
+//     let mut rng = ChaCha20Rng::seed_from_u64(61106035);
+//     if d > 0 {
+//         for _ in 0..1000000 {
+//             let n = rng.gen_range(i64::MIN..=i64::MAX);
+//             let q0 = n + mulsh(n);
+//             let q = (q0 >> (l - 1)) - (n >> 63);
+//             assert!(q == n / d, "n: {}, q: {}, q0: {}", n, q, q0);
+//         }
+//     } else {
+//         for _ in 0..1000000 {
+//             let n = rng.gen_range(i64::MIN..=i64::MAX);
+//             let q0 = n + mulsh(n);
+//             let q = (q0 >> (l - 1)) - (n >> 63);
+//             assert!(-q == n / d, "n: {}, q: {}, q0: {}", n, q, q0);
+//         }
+//     }
+// }

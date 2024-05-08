@@ -28,6 +28,8 @@ opener = "0.7"
 tempfile = "3.10"
 
 petgraph = "0.6"
+rand = "0.8"
+rand_chacha = "0.3"
 
 # Requires libclang
 good_lp = { git = "https://github.com/ma-chengyuan/good_lp.git", rev = "07380b0", default-features = false, features = [
