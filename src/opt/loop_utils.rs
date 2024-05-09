@@ -125,7 +125,7 @@ impl LoopAnalysis {
 
     pub fn get_freq(&self, block_ref: BlockRef) -> usize {
         self.get_loop(block_ref)
-            .map(|l| 10usize.pow(l.borrow().depth().max(8) as u32))
+            .map(|l| 10usize.pow(l.borrow().depth().min(8) as u32))
             .unwrap_or(1)
     }
 

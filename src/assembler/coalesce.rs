@@ -1,5 +1,6 @@
 use std::{
-    collections::{HashMap, HashSet},
+    cmp::Ordering,
+    collections::{BinaryHeap, HashMap, HashSet},
     fmt::Debug,
 };
 
@@ -7,7 +8,10 @@ use good_lp::{
     constraint, highs, variable, Expression, ProblemVariables, ResolutionError, Solution,
     SolverModel, Variable,
 };
-use petgraph::graphmap::{NodeTrait, UnGraphMap};
+use petgraph::{
+    algo::tarjan_scc,
+    graphmap::{NodeTrait, UnGraphMap},
+};
 
 use crate::inter::ir::{Inst, InstRef};
 
@@ -26,6 +30,11 @@ pub struct Coalescer<T: NodeTrait> {
     max_color: usize,
     initial_solution: Option<HashMap<T, usize>>,
     colors: HashMap<T, usize>,
+
+    /// The nodes that have been fixed to a color. Used for heuristic.
+    fixed: HashSet<T>,
+    /// Old colors of the nodes. Used for heuristic.
+    old_colors: HashMap<T, usize>,
 }
 
 /// Find a minimum clique edge cover of a chordal graph. Returns None if the
@@ -146,24 +155,33 @@ impl Coalescer<InstRef> {
         Self {
             gi,
             ga,
+            fixed: HashSet::new(),
             max_color: l.max_reg,
             colors: HashMap::new(),
+            old_colors: HashMap::new(),
             initial_solution: Some(l.reg.clone()),
         }
     }
 
     pub fn solve_and_apply(mut self, l: &mut LoweredMethod) {
-        if self.solve().is_ok() {
-            // Sanity check!
-            assert!(self.max_color == l.max_reg);
-            assert!(self.colors.len() == l.reg.len());
-            for (a, b, _) in self.gi.all_edges() {
-                assert!(self.colors[&a] != self.colors[&b]);
-            }
-            for (inst_ref, color) in &self.colors {
-                assert!(l.reg.contains_key(inst_ref));
-                l.reg.insert(*inst_ref, *color);
-            }
+        // Sanity check!
+        assert!(self.max_color == l.max_reg);
+        let fallback = if self.initial_solution.is_some() {
+            self.solve_heuristic();
+            self.colors.clone()
+        } else {
+            l.reg.clone()
+        };
+        if self.solve().is_err() {
+            self.colors = fallback;
+        }
+        for (a, b, _) in self.gi.all_edges() {
+            assert!(self.colors[&a] != self.colors[&b]);
+        }
+        assert!(self.colors.len() == l.reg.len());
+        for (inst_ref, color) in &self.colors {
+            assert!(l.reg.contains_key(inst_ref));
+            l.reg.insert(*inst_ref, *color);
         }
     }
 }
@@ -266,7 +284,7 @@ impl<T: NodeTrait + Debug> Coalescer<T> {
         results
     }
 
-    fn solve_hardcore(&mut self) -> Result<f64, ResolutionError> {
+    fn solve_ilp(&mut self) -> Result<f64, ResolutionError> {
         if self.gi.node_count() == 0 {
             return Ok(0.0);
         }
@@ -342,7 +360,10 @@ impl<T: NodeTrait + Debug> Coalescer<T> {
         }
 
         model = model.set_time_limit(HIGHS_TIME_LIMIT);
-        if let Some(solution) = &self.initial_solution {
+        if self.initial_solution.is_some() {
+            // solve_heuristic() must have been called before this. So we have a
+            // heuristic solution.
+            let solution = &self.colors;
             let mut ilp_soln = HashMap::new();
             for (v, color) in solution {
                 if let Some(vs) = x.get(v) {
@@ -396,7 +417,7 @@ impl<T: NodeTrait + Debug> Coalescer<T> {
             self.gi.remove_node(v);
             removed.push((v, neighbors));
         }
-        self.solve_hardcore()?;
+        self.solve_ilp()?;
         while let Some((v, neighbors)) = removed.pop() {
             self.gi.add_node(v);
             let colors = neighbors
@@ -410,5 +431,272 @@ impl<T: NodeTrait + Debug> Coalescer<T> {
             }
         }
         Ok(())
+    }
+
+    // Heuristic solver. Faster but probably less optimal.
+    fn solve_heuristic(&mut self) {
+        // Heuristic must be run with a valid initial solution.
+        self.colors = self.initial_solution.as_ref().unwrap().clone();
+        let mut q = BinaryHeap::new();
+        for chunk_with_weight in self.build_chunks() {
+            q.push(chunk_with_weight);
+        }
+        while let Some(ChunkWithWeight { chunk, .. }) = q.pop() {
+            self.recolor_chunk(&chunk, &mut q);
+        }
+    }
+
+    fn recolor(&mut self, x: T, c: usize) {
+        if self.fixed.contains(&x) {
+            return;
+        }
+        if self
+            .gi
+            .neighbors(x)
+            .any(|n| self.fixed.contains(&n) && self.colors[&n] == c)
+        {
+            // Not admissible.
+            return;
+        }
+        let mut changed = HashSet::new();
+        self.set_color(x, c, &mut changed);
+        for n in self.gi.neighbors(x).collect::<Vec<_>>() {
+            if !self.avoid_color(n, c, &mut changed) {
+                // Revert changes.
+                for x in &changed {
+                    self.colors.insert(*x, self.old_colors[&x]);
+                }
+                break;
+            }
+        }
+        // Unfix nodes that were fixed.
+        for n in changed {
+            self.fixed.remove(&n);
+        }
+    }
+
+    fn set_color(&mut self, x: T, c: usize, changed: &mut HashSet<T>) {
+        self.fixed.insert(x);
+        self.old_colors.insert(x, self.colors[&x]);
+        changed.insert(x);
+        self.colors.insert(x, c);
+    }
+
+    fn avoid_color(&mut self, x: T, c: usize, changed: &mut HashSet<T>) -> bool {
+        if self.colors[&x] != c {
+            return true;
+        }
+        if self.fixed.contains(&x) {
+            return false;
+        }
+        let mut admissible = (0..self.max_color).collect::<HashSet<_>>();
+        for n in self.gi.neighbors(x) {
+            if self.fixed.contains(&n) {
+                admissible.remove(&self.colors[&n]);
+            }
+        }
+        admissible.remove(&c);
+        // Choose another color used least by neighbors.
+        let Some(c_) = admissible
+            .iter()
+            .min_by_key(|c| {
+                self.gi
+                    .neighbors(x)
+                    .filter(|n| self.colors[&n] == **c)
+                    .count()
+            })
+            .copied()
+        else {
+            return false;
+        };
+        self.set_color(x, c_, changed);
+        for n in self.gi.neighbors(x).collect::<Vec<_>>() {
+            if !self.avoid_color(n, c_, changed) {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn build_chunks(&self) -> Vec<ChunkWithWeight<T>> {
+        let mut uf = UnionFind {
+            root: HashMap::new(),
+            rank: HashMap::new(),
+        };
+        for v in self.gi.nodes() {
+            uf.root.insert(v, v);
+            uf.rank.insert(v, 0);
+        }
+        let mut edges = self.ga.all_edges().collect::<Vec<_>>();
+        // Sort edge weight from largest to smallest.
+        edges.sort_by(|(_, _, w1), (_, _, w2)| w2.partial_cmp(w1).unwrap());
+        for (x, y, _) in edges {
+            let x = uf.find(x);
+            let y = uf.find(y);
+            if x == y {
+                continue;
+            }
+            if !self.gi.all_edges().any(|(v, w, _)| {
+                let v = uf.find(v);
+                let w = uf.find(w);
+                (x == v && y == w) || (x == w && y == v)
+            }) {
+                uf.union(x, y);
+            }
+        }
+        let mut chunks: HashMap<T, HashSet<T>> = HashMap::new();
+        for v in self.gi.nodes() {
+            let root = uf.find(v);
+            chunks.entry(root).or_default().insert(v);
+        }
+        chunks
+            .into_values()
+            .map(|chunk| ChunkWithWeight {
+                weight: self.chunk_cost(&chunk),
+                chunk,
+            })
+            .collect()
+    }
+
+    fn chunk_cost(&self, chunk: &HashSet<T>) -> f64 {
+        let mut cost = 0.0;
+        for x in chunk {
+            for y in self.ga.neighbors(*x).filter(|y| chunk.contains(y)) {
+                cost += self.ga.edge_weight(*x, y).unwrap();
+            }
+        }
+        cost / 2.0 // Each edge is counted twice.
+    }
+
+    fn recolor_chunk(&mut self, chunk: &HashSet<T>, q: &mut BinaryHeap<ChunkWithWeight<T>>) {
+        let mut best_chunk: Option<ChunkWithWeight<T>> = None;
+        let mut best_color = 0;
+        for c in 0..self.max_color {
+            for x in chunk {
+                self.fixed.remove(x);
+            }
+            for x in chunk {
+                self.recolor(*x, c);
+                self.fixed.insert(*x);
+            }
+            // Find the best affine component colored to c.
+            let mut g_tmp: UnGraphMap<T, ()> = UnGraphMap::new();
+            for x in chunk.iter().filter(|x| self.colors[x] == c) {
+                g_tmp.add_node(*x);
+                for y in self
+                    .ga
+                    .neighbors(*x)
+                    .filter(|y| chunk.contains(y) && self.colors[x] == c)
+                {
+                    g_tmp.add_edge(*x, y, ());
+                }
+            }
+            let Some(m) = tarjan_scc(&g_tmp)
+                .into_iter()
+                .map(|cc| {
+                    let cc = HashSet::from_iter(cc);
+                    ChunkWithWeight {
+                        weight: self.chunk_cost(&cc),
+                        chunk: cc,
+                    }
+                })
+                .max()
+            else {
+                continue;
+            };
+            if let Some(prev_best) = &best_chunk {
+                if m.weight > prev_best.weight {
+                    best_chunk = Some(m);
+                    best_color = c;
+                }
+            } else {
+                best_chunk = Some(m);
+                best_color = c;
+            }
+        }
+        for x in chunk {
+            self.fixed.remove(x);
+        }
+        let Some(best_chunk) = best_chunk else {
+            return;
+        };
+        for x in &best_chunk.chunk {
+            self.recolor(*x, best_color);
+            self.fixed.insert(*x);
+        }
+        if chunk.len() > best_chunk.chunk.len() {
+            let new_chunk: HashSet<T> = chunk.difference(&best_chunk.chunk).copied().collect();
+            assert!(!new_chunk.is_empty());
+            q.push(ChunkWithWeight {
+                weight: self.chunk_cost(&new_chunk),
+                chunk: new_chunk,
+            });
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ChunkWithWeight<T: NodeTrait> {
+    chunk: HashSet<T>,
+    weight: f64,
+}
+
+impl<T: NodeTrait> PartialEq for ChunkWithWeight<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.weight == other.weight
+    }
+}
+
+impl<T: NodeTrait> Eq for ChunkWithWeight<T> {}
+
+impl<T: NodeTrait> PartialOrd for ChunkWithWeight<T> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl<T: NodeTrait> Ord for ChunkWithWeight<T> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        f64::total_cmp(&self.weight, &other.weight)
+    }
+}
+
+// Union-find
+#[derive(Debug, Clone)]
+struct UnionFind<T: NodeTrait> {
+    root: HashMap<T, T>,
+    rank: HashMap<T, usize>,
+}
+
+impl<T: NodeTrait> UnionFind<T> {
+    fn find(&mut self, x: T) -> T {
+        let root = self.root[&x];
+        if root == x {
+            x
+        } else {
+            let root = self.find(root);
+            self.root.insert(x, root);
+            root
+        }
+    }
+
+    fn union(&mut self, x: T, y: T) {
+        let x = self.find(x);
+        let y = self.find(y);
+        if x == y {
+            return;
+        }
+        match self.rank[&x].cmp(&self.rank[&y]) {
+            Ordering::Less => {
+                self.root.insert(x, y);
+            }
+            Ordering::Greater => {
+                self.root.insert(y, x);
+            }
+            Ordering::Equal => {
+                self.root.insert(y, x);
+                self.rank.insert(x, self.rank[&x] + 1);
+            }
+        }
     }
 }

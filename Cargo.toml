@@ -28,8 +28,9 @@ opener = "0.7"
 tempfile = "3.10"
 
 petgraph = "0.6"
-rand = "0.8"
-rand_chacha = "0.3"
+# rand = "0.8"
+# rand_chacha = "0.3"
+# ordered-float = "4.2"
 
 regex = "1.10"
 
