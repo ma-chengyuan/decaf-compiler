@@ -36,6 +36,7 @@ pub mod arr_nm;
 pub mod coalesce;
 pub mod imm_nm;
 pub mod par_copy;
+pub mod peephole;
 pub mod regalloc;
 pub mod spill;
 pub mod term_nm;
@@ -237,6 +238,13 @@ impl Assembler {
         self.emit_data_code(
             ".string \"Error: Method finished without returning anything when it should have.\\n\"",
         );
+
+        // Peephole optimizations
+        self.adjust_cmp_jmp_order();
+        self.remove_unnecessary_jmps();
+        self.remove_unnecessary_labels();
+        self.remove_unreachable_code();
+        self.remove_unnecessary_jmps();
 
         let mut output = format!(".file 0 \"{}\"\n.data\n", file_name);
         for data in self.data.iter() {
