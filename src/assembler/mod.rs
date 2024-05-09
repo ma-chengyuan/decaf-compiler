@@ -136,8 +136,8 @@ const ARG_REGS: [&str; 6] = ["%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"];
 lazy_static! {
     static ref REGS: Vec<&'static str> = {
         let mut regs = Vec::new();
-        regs.extend_from_slice(&CALLER_SAVE_REGS);
         regs.extend_from_slice(&CALLEE_SAVE_REGS);
+        regs.extend_from_slice(&CALLER_SAVE_REGS);
         regs
     };
 }
@@ -343,6 +343,17 @@ pub struct MethodAssembler<'a> {
 impl<'a> MethodAssembler<'a> {
     fn new(asm: &'a mut Assembler, l: &'a LoweredMethod) -> Self {
         // crate::utils::show_graphviz(&l.method.dump_graphviz());
+        // if this method doesn't call any other functions, prefer caller-saved registers over callee-saved registers.
+        let mut calls_other_functions = false;
+        for (_, inst) in l.method.iter_insts() {
+            if let Inst::Call { .. } = inst {
+                calls_other_functions = true;
+            }
+        }
+        let mut regs = REGS.clone(); // by default, prioritizes callee-saved over caller-saved
+        if !calls_other_functions {
+            regs.reverse();
+        }
         Self {
             asm,
             name: &l.method.name.inner,
@@ -350,7 +361,7 @@ impl<'a> MethodAssembler<'a> {
             pending_bounds_check: BTreeSet::new(),
             tainted_callee_saved_regs: BTreeSet::new(),
             arg_loading_insts: HashSet::new(),
-            regs: REGS.clone(),
+            regs,
             l,
         }
     }
