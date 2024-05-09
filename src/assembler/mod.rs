@@ -136,8 +136,8 @@ const ARG_REGS: [&str; 6] = ["%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"];
 lazy_static! {
     static ref REGS: Vec<&'static str> = {
         let mut regs = Vec::new();
-        regs.extend_from_slice(&CALLEE_SAVE_REGS);
         regs.extend_from_slice(&CALLER_SAVE_REGS);
+        regs.extend_from_slice(&CALLEE_SAVE_REGS);
         regs
     };
 }
