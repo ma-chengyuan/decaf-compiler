@@ -680,6 +680,8 @@ impl<'a> MethodAssembler<'a> {
         for block_ref in rev_postorder.iter().cloned() {
             self.emit_block_label(block_ref);
             let insts = &self.l.method.block(block_ref).insts;
+            // Keeps the verified bounds of each array access index so far.
+            let mut bounds: HashMap<InstRef, (i64, i64)> = HashMap::new();
             for (i, inst_ref) in insts.iter().enumerate() {
                 if self.arg_loading_insts.contains(inst_ref) {
                     // Skip argument loading instructions. They have been
@@ -801,7 +803,14 @@ impl<'a> MethodAssembler<'a> {
                                 Type::Array { length, base } => (*length, base.size() as i64),
                                 _ => unreachable!(),
                             };
-                        self.emit_bounds_check(*inst_ref, *index, length);
+                        self.emit_bounds_check(
+                            *inst_ref,
+                            *index,
+                            length,
+                            block_ref,
+                            i,
+                            &mut bounds,
+                        );
                         let offset = self.l.array_offsets.get(inst_ref).copied().unwrap_or(0);
                         let index = self.arg(*inst_ref, *index);
                         let addr = self.emit_address(addr, &index, elem_size, offset);
@@ -813,7 +822,14 @@ impl<'a> MethodAssembler<'a> {
                                 Type::Array { length, base } => (*length, base.size() as i64),
                                 _ => unreachable!(),
                             };
-                        self.emit_bounds_check(*inst_ref, *index, length);
+                        self.emit_bounds_check(
+                            *inst_ref,
+                            *index,
+                            length,
+                            block_ref,
+                            i,
+                            &mut bounds,
+                        );
                         let value = self.arg(*inst_ref, *value);
                         let offset = self.l.array_offsets.get(inst_ref).copied().unwrap_or(0);
                         let index = self.arg(*inst_ref, *index);
@@ -1215,33 +1231,104 @@ impl<'a> MethodAssembler<'a> {
     }
 
     /// Checks if %rax is in [0, length) and panics if not
-    fn emit_bounds_check(&mut self, inst_ref: InstRef, val: InstRef, length: usize) {
+    fn emit_bounds_check(
+        &mut self,
+        inst_ref: InstRef,
+        index_ref: InstRef,
+        length: usize,
+        block_ref: BlockRef,
+        inst_idx: usize,
+        bounds: &mut HashMap<InstRef, (i64, i64)>,
+    ) {
         let line = self
             .l
             .method
-            .get_inst_annotation(&val)
+            .get_inst_annotation(&index_ref)
             .and_then(|a| a.spans().first().cloned())
             .map(|s| s.start().line)
             .unwrap_or(0); // TODO: better error handling
-        let index = self.arg(inst_ref, val);
+        let index_arg = self.arg(inst_ref, index_ref);
         let offset = self.l.array_offsets.get(&inst_ref).copied().unwrap_or(0);
         let check = PendingBoundsCheck {
-            index: index.clone(),
+            index: index_arg.clone(),
             length,
             line,
             offset,
         };
         let fail_branch = self.get_bound_check_fail_label(&check);
-        match index {
+        match index_arg {
             AsmArg::Reg(reg) => {
-                if offset == 0 {
-                    self.emit_code(format!("cmpq ${}, {}", length - 1, reg));
-                } else {
-                    self.emit_code(format!("leaq {}({}), %rax", offset, reg));
-                    self.emit_code(format!("cmpq ${}, %rax", length - 1));
+                let (min, max) = bounds
+                    .get(&index_ref)
+                    .cloned()
+                    .unwrap_or((i64::MIN, i64::MAX));
+                let mut req_bound = (-offset, length as i64 - 1 - offset);
+                // Bound check fusion
+                for inst_ref in &self.l.method.block(block_ref).insts[inst_idx + 1..] {
+                    match self.l.method.inst(*inst_ref) {
+                        Inst::LoadArray { addr, index } | Inst::StoreArray { addr, index, .. }
+                            if *index == index_ref =>
+                        {
+                            let offset = self.l.array_offsets.get(inst_ref).copied().unwrap_or(0);
+                            let length =
+                                match self.asm.program.infer_address_type(&self.l.method, addr) {
+                                    Type::Array { length, .. } => *length,
+                                    _ => unreachable!(),
+                                };
+                            // Tighten the bounds
+                            req_bound = (
+                                req_bound.0.max(0 - offset),
+                                req_bound.1.min(length as i64 - 1 - offset),
+                            );
+                            // println!("  scanning through {} {:?}", inst_ref, req_bound);
+                        }
+                        // Don't fuse bounds check beyond calls. Calls may be
+                        // side effective and fusion across calls could cause a
+                        // branch check failure that would have happened after
+                        // the call to happen before. If the call is side
+                        // effective then we've changed the observable behavior
+                        // of the program.
+                        Inst::Call { .. } => break,
+                        _ => continue,
+                    }
                 }
-                self.emit_code(format!("ja {}", fail_branch)); // Unsigned comparison
+                // if self.name == "main" {
+                //     println!(
+                //         "{}.{}: [{}] {:?} {:?}",
+                //         block_ref,
+                //         inst_ref,
+                //         index_ref,
+                //         req_bound,
+                //         (min, max)
+                //     );
+                // }
+
+                let (req_min, req_max) = req_bound;
+                let min_in_bounds = min >= req_min;
+                let max_in_bounds = max <= req_max;
+                if min_in_bounds && max_in_bounds {
+                    return; // The index is already known to be in bounds, no need to check again.
+                }
+                if max_in_bounds {
+                    // Only need to check below, i.e., if reg >= req_min
+                    self.emit_code(format!("cmpq ${}, {}", req_min, reg));
+                    self.emit_code(format!("jl {}", fail_branch));
+                } else if min_in_bounds {
+                    // Only need to check above, i.e., if reg <= req_max
+                    self.emit_code(format!("cmpq ${}, {}", req_max, reg));
+                    self.emit_code(format!("jg {}", fail_branch));
+                } else {
+                    // Double check both bounds, i.e., if reg in [req_min, req_max]
+                    if req_min == 0 {
+                        self.emit_code(format!("cmpq ${}, {}", req_max, reg));
+                    } else {
+                        self.emit_code(format!("leaq {}({}), %rax", -req_min, reg));
+                        self.emit_code(format!("cmpq ${}, %rax", req_max - req_min));
+                    }
+                    self.emit_code(format!("ja {}", fail_branch)); // Unsigned comparison
+                }
                 self.pending_bounds_check.insert(check);
+                bounds.insert(index_ref, (min.max(req_min), max.min(req_max)));
             }
             AsmArg::Imm(i) => {
                 let i = i + offset;
