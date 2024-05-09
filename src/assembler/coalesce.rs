@@ -14,7 +14,7 @@ use crate::inter::ir::{Inst, InstRef};
 use super::LoweredMethod;
 
 /// The time limit for the ILP solver in seconds.
-const HIGHS_TIME_LIMIT: f64 = 10.0; // 10 seconds / per function is pretty generous.
+const HIGHS_TIME_LIMIT: f64 = 60.0; // 10 seconds / per function is pretty generous.
 const HIGHS_VERBOSE: bool = false; // Set to false to disable verbose output.
 
 pub struct Coalescer<T: NodeTrait> {
