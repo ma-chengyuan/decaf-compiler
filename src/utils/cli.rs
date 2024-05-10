@@ -18,6 +18,7 @@ pub enum CompilerAction {
     Assembly,
 }
 
+#[allow(clippy::upper_case_acronyms)]
 #[derive(Clone, clap::ValueEnum, Debug, PartialEq, Eq, Hash)]
 pub enum Optimization {
     #[clap(name = "cp")]
@@ -42,6 +43,8 @@ pub enum Optimization {
     DeadArrayStoreElimination,
     #[clap(name = "unroll")]
     LoopUnrolling,
+    #[clap(name = "indvar")]
+    InductionVariable,
     #[clap(name = "all")]
     All,
 }

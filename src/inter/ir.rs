@@ -1030,7 +1030,8 @@ impl Program {
             visited.remove(&inst_ref);
             result
         }
-        infer_inner(self, method, inst_ref, &mut visited).unwrap()
+        infer_inner(self, method, inst_ref, &mut visited)
+            .unwrap_or_else(|| panic!("cannot infer inst type due to cycle: {}", inst_ref))
     }
 }
 

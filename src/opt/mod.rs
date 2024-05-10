@@ -15,6 +15,7 @@ pub mod dead_code;
 pub mod dom;
 pub mod function_inlining;
 pub mod gvnpre;
+pub mod indvar;
 pub mod licm;
 pub mod loop_utils;
 pub mod rgae;
@@ -160,7 +161,7 @@ pub fn optimize(mut program: Program, optimizations: &[Optimization]) -> Program
             Optimization::GVNPRE,
             Optimization::CopyPropagation,
             Optimization::DeadCodeElimination,
-            // Optimization::CommonSubexpressionElimination,
+            // Optimization::CommonSubexpressionElimination, // Superseded by GVNPRE
             Optimization::ConstantFolding,
             // Optimization::ArraySplitting,
             Optimization::FunctionInlining,
@@ -168,6 +169,7 @@ pub fn optimize(mut program: Program, optimizations: &[Optimization]) -> Program
             Optimization::DeadArrayStoreElimination,
             Optimization::LoopUnrolling,
             // Optimization::LoopInvariantCodeMotion,
+            Optimization::InductionVariable,
         ]);
     }
 
@@ -186,6 +188,13 @@ pub fn optimize(mut program: Program, optimizations: &[Optimization]) -> Program
                 unroll::unroll_loops(method);
             }
         }
+
+        if optimizations.contains(&Optimization::InductionVariable) {
+            for method in program.methods.values_mut() {
+                indvar::reduce_induction_variables(method);
+            }
+        }
+
         // Constant folding
         if optimizations.contains(&Optimization::ConstantFolding) {
             for method in program.methods.values_mut() {
@@ -252,12 +261,8 @@ pub fn optimize(mut program: Program, optimizations: &[Optimization]) -> Program
     }
 
     // for method in program.methods.values_mut() {
-    //     if method.name.inner.as_ref() == "gaussian_blur" {
-    //         crate::utils::show_graphviz(&method.dump_graphviz());
-    //         // unroll::unroll_loops(method);
-    //         // crate::utils::show_graphviz(&method.dump_graphviz());
-    //         // array_dse::eliminate_dead_array_stores(method);
-    //         // crate::utils::show_graphviz(&method.dump_graphviz());
+    //     if method.name.inner.as_ref() == "filter" {
+    //         // indvar::reduce_induction_variables(method);
     //     }
     // }
 
