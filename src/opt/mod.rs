@@ -169,7 +169,7 @@ pub fn optimize(mut program: Program, optimizations: &[Optimization]) -> Program
             Optimization::DeadArrayStoreElimination,
             Optimization::LoopUnrolling,
             // Optimization::LoopInvariantCodeMotion,
-            Optimization::InductionVariable,
+            // Optimization::InductionVariable,
         ]);
     }
 
