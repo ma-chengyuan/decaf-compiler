@@ -232,17 +232,17 @@ pub fn reduce_induction_variables(method: &mut Method) {
         }
 
         // Optimize!
-        let mut ind_var_by_mult: HashMap<i64, Vec<(InstRef, IndVar)>> = HashMap::new();
+        let mut ind_var_by_mult: HashMap<(InstRef, i64), Vec<(InstRef, IndVar)>> = HashMap::new();
         for (inst_ref, ind_var) in interesting {
             ind_var_by_mult
-                .entry(ind_var.mult)
+                .entry((ind_var.base.inst_ref, ind_var.mult))
                 .or_default()
                 .push((inst_ref, ind_var));
         }
         // Pick a representative for each multiplier to be initialized out of the loop
-        let mut rep: HashMap<i64, (InstRef, i64)> = HashMap::new();
+        let mut rep: HashMap<(InstRef, i64), (InstRef, i64)> = HashMap::new();
         let loop_ = loop_rc.borrow();
-        for (mult, vars) in ind_var_by_mult.iter() {
+        for ((base_ref, mult), vars) in ind_var_by_mult.iter() {
             if *mult == 1 {
                 // No need to initialize the base induction variable.
                 continue;
@@ -273,7 +273,7 @@ pub fn reduce_induction_variables(method: &mut Method) {
             );
             // Building the phi map for the preheader.
             let var_ref = method.next_inst_prepend(header_ref, Inst::Phi(HashMap::new()));
-            rep.insert(*mult, (var_ref, ind_var.offset));
+            rep.insert((*base_ref, *mult), (var_ref, ind_var.offset));
             if let Some(annotation) = method.get_inst_annotation(inst_ref) {
                 *method.annotate_inst_mut(var_ref) = annotation.clone();
             }
@@ -290,11 +290,11 @@ pub fn reduce_induction_variables(method: &mut Method) {
             }
         }
 
-        for (mult, vars) in ind_var_by_mult {
+        for ((base_ref, mult), vars) in ind_var_by_mult {
             let (rep, rep_offset) = if mult == 1 {
                 (vars[0].1.base.inst_ref, 0)
             } else {
-                rep[&mult]
+                rep[&(base_ref, mult)]
             };
             for (inst_ref, ind_var) in vars {
                 if ind_var.offset == rep_offset {

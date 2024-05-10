@@ -169,7 +169,7 @@ pub fn optimize(mut program: Program, optimizations: &[Optimization]) -> Program
             Optimization::DeadArrayStoreElimination,
             Optimization::LoopUnrolling,
             // Optimization::LoopInvariantCodeMotion,
-            // Optimization::InductionVariable,
+            Optimization::InductionVariable,
         ]);
     }
 
@@ -262,6 +262,7 @@ pub fn optimize(mut program: Program, optimizations: &[Optimization]) -> Program
 
     // for method in program.methods.values_mut() {
     //     if method.name.inner.as_ref() == "filter" {
+    //         crate::utils::show_graphviz(&method.dump_graphviz());
     //         // indvar::reduce_induction_variables(method);
     //     }
     // }
