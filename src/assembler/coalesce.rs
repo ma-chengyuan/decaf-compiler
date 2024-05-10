@@ -13,19 +13,39 @@ use petgraph::{
     graphmap::{NodeTrait, UnGraphMap},
 };
 
-use crate::inter::ir::{Inst, InstRef};
+use crate::inter::ir::{Address, Inst, InstRef, ProgPt};
 
-use super::LoweredMethod;
+use super::{
+    identify_fast_arg_insts, LoweredMethod, NonMaterializedArgMapExt, ARG_REGS, CALLEE_SAVE_REGS,
+};
 
 /// The time limit for the ILP solver in seconds.
 const HIGHS_TIME_LIMIT: f64 = 60.0; // 10 seconds / per function is pretty generous.
 const HIGHS_VERBOSE: bool = false; // Set to false to disable verbose output.
 
-pub struct Coalescer<T: NodeTrait> {
+pub trait CoalescingNode: NodeTrait {
+    /// Makes a new auxiliary node. Auxillary node must satisfy the following
+    /// properties:
+    /// - An auxilliary node must not conflict with normal nodes.
+    /// - Auxilliary nodes with different i s are distinct.
+    fn new_aux(i: usize) -> Self;
+}
+
+impl CoalescingNode for InstRef {
+    fn new_aux(i: usize) -> Self {
+        assert!(i < usize::MAX / 2);
+        InstRef(usize::MAX - i)
+    }
+}
+
+pub struct Coalescer<T: CoalescingNode> {
     /// The interference graph.
     gi: UnGraphMap<T, ()>,
     /// The affinity graph.
     ga: UnGraphMap<T, f64>,
+    /// Constant affinity preferences: (node, color) -> bonus (or penalty) if
+    /// node gets that color.
+    pref: HashMap<(T, usize), f64>,
 
     max_color: usize,
     initial_solution: Option<HashMap<T, usize>>,
@@ -120,7 +140,7 @@ where
 }
 
 impl Coalescer<InstRef> {
-    pub fn new(l: &LoweredMethod) -> Self {
+    pub fn new_reg(l: &LoweredMethod, regs: &[&'static str]) -> Self {
         let mut gi = UnGraphMap::<InstRef, ()>::default();
         for live_set in l.live_at.values() {
             for inst_ref in live_set {
@@ -151,10 +171,64 @@ impl Coalescer<InstRef> {
                 }
             }
         }
+        let mut pref: HashMap<(InstRef, usize), f64> = HashMap::new();
+        if let Some(arg_loading_insts) = identify_fast_arg_insts(l) {
+            for inst_ref in arg_loading_insts {
+                match l.method.inst(inst_ref) {
+                    Inst::Load(Address::Local(slot_ref)) => {
+                        let best_reg = ARG_REGS[slot_ref.0];
+                        if let Some(pos) = regs.iter().position(|&r| r == best_reg) {
+                            // Prefer the argument to be allocated the argument register,
+                            // so we don't need that extra move.
+                            pref.insert((inst_ref, pos), 1.0);
+                        }
+                    }
+                    _ => unreachable!(),
+                }
+            }
+        }
+        // Calling
+        for block_ref in l.method.iter_block_refs() {
+            let insts = &l.method.block(block_ref).insts;
+            let freq = l.loops.get_freq(block_ref);
+            for (i, inst_ref) in insts.iter().copied().enumerate() {
+                if let Inst::Call { args, .. } = l.method.inst(inst_ref) {
+                    let next_pt = if i == insts.len() - 1 {
+                        ProgPt::BeforeTerm(block_ref)
+                    } else {
+                        ProgPt::BeforeInst(insts[i + 1])
+                    };
+                    let saving_regs = l.live_at[&next_pt]
+                        .iter()
+                        .copied()
+                        .filter(|v| *v != inst_ref)
+                        .collect::<Vec<_>>();
+                    for (i, arg_ref) in args.iter().copied().take(6).enumerate() {
+                        if l.nm_args.is_materialized(inst_ref, arg_ref) {
+                            if let Some(pos) = regs.iter().position(|&r| r == ARG_REGS[i]) {
+                                // Prefer the argument to be allocated the argument register!
+                                pref.insert((arg_ref, pos), 1.0 * freq as f64);
+                            }
+                        }
+                    }
+                    for saving_ref in saving_regs {
+                        for reg in CALLEE_SAVE_REGS {
+                            if let Some(pos) = regs.iter().position(|&r| r == reg) {
+                                // Prefer the saving register to be allocated the callee-save register.
+                                // Reward is slightly higher. Because saving in caller-saved register.
+                                // incurs a push + pop.
+                                pref.insert((saving_ref, pos), 2.0 * freq as f64);
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         Self {
             gi,
             ga,
+            pref,
             fixed: HashSet::new(),
             max_color: l.max_reg,
             colors: HashMap::new(),
@@ -167,7 +241,10 @@ impl Coalescer<InstRef> {
         // Sanity check!
         assert!(self.max_color == l.max_reg);
         let fallback = if self.initial_solution.is_some() {
+            // self.colors = l.reg.clone();
+            // println!("init cost: {}", self.current_solution_cost());
             self.solve_heuristic();
+            // println!("heur cost: {}", self.current_solution_cost());
             self.colors.clone()
         } else {
             l.reg.clone()
@@ -179,6 +256,7 @@ impl Coalescer<InstRef> {
             assert!(self.colors[&a] != self.colors[&b]);
         }
         assert!(self.colors.len() == l.reg.len());
+        // println!(" ilp cost: {}", self.current_solution_cost());
         for (inst_ref, color) in &self.colors {
             assert!(l.reg.contains_key(inst_ref));
             l.reg.insert(*inst_ref, *color);
@@ -186,7 +264,7 @@ impl Coalescer<InstRef> {
     }
 }
 
-impl<T: NodeTrait + Debug> Coalescer<T> {
+impl<T: CoalescingNode + Debug> Coalescer<T> {
     /// Finds all affinity-violating paths between two interfering nodes (a, b).
     ///
     /// "We call two nodes a, b affinity violating if a and b interfere and
@@ -194,7 +272,7 @@ impl<T: NodeTrait + Debug> Coalescer<T> {
     /// such that the only interference of nodes in the path is between a and
     /// b". (Definition 4.6 in Hack's thesis)
     fn find_affinity_violating_paths(&self, a: T, b: T) -> Vec<im::Vector<T>> {
-        fn dfs<T: NodeTrait>(
+        fn dfs<T: CoalescingNode>(
             c: &Coalescer<T>,
             cur: T,
             goal: T,
@@ -301,6 +379,9 @@ impl<T: NodeTrait + Debug> Coalescer<T> {
             objective += *w_ij * y_ij;
             y.insert((i, j), y_ij);
         }
+        for ((i, c), w) in self.pref.iter() {
+            objective -= *w * x[i][*c];
+        }
         let mut model = problem.minimise(objective.clone()).using(highs);
         for (_, v) in x.iter() {
             let sum: Expression = v.iter().sum();
@@ -405,11 +486,14 @@ impl<T: NodeTrait + Debug> Coalescer<T> {
 
     fn solve(&mut self) -> Result<(), ResolutionError> {
         let mut removed: Vec<(T, Vec<T>)> = vec![];
+        let with_prefs = self.pref.keys().map(|(x, _)| *x).collect::<HashSet<_>>();
         loop {
             let Some(v) = self.gi.nodes().find(|v| {
                 // If a node has less than max_color neighbors then it can always be colored.
                 // ... but only if it has no affinity edges
-                self.gi.neighbors(*v).count() < self.max_color && !self.ga.contains_node(*v)
+                self.gi.neighbors(*v).count() < self.max_color
+                    && !self.ga.contains_node(*v)
+                    && !with_prefs.contains(v)
             }) else {
                 break;
             };
@@ -433,16 +517,49 @@ impl<T: NodeTrait + Debug> Coalescer<T> {
         Ok(())
     }
 
+    #[allow(dead_code)]
+    fn current_solution_cost(&mut self) -> f64 {
+        let mut cost = 0.0;
+        for (i, j, w) in self.ga.all_edges() {
+            if self.colors[&i] != self.colors[&j] {
+                cost += w;
+            }
+        }
+        for ((i, c), w) in self.pref.iter() {
+            if self.colors[i] == *c {
+                cost -= w;
+            }
+        }
+        cost
+    }
+
     // Heuristic solver. Faster but probably less optimal.
     fn solve_heuristic(&mut self) {
         // Heuristic must be run with a valid initial solution.
         self.colors = self.initial_solution.as_ref().unwrap().clone();
+        // Preferences are implemented as fixed aux node.
+        let mut aux_nodes = vec![];
+        for (i, ((x, c), w)) in self.pref.iter().enumerate() {
+            let aux_node = T::new_aux(i);
+            aux_nodes.push(aux_node);
+            self.gi.add_node(aux_node);
+            self.ga.add_node(aux_node);
+            self.ga.add_edge(*x, aux_node, *w);
+            self.colors.insert(aux_node, *c);
+            self.fixed.insert(aux_node);
+        }
         let mut q = BinaryHeap::new();
         for chunk_with_weight in self.build_chunks() {
             q.push(chunk_with_weight);
         }
         while let Some(ChunkWithWeight { chunk, .. }) = q.pop() {
             self.recolor_chunk(&chunk, &mut q);
+        }
+        for aux_node in aux_nodes {
+            self.gi.remove_node(aux_node);
+            self.ga.remove_node(aux_node);
+            self.colors.remove(&aux_node);
+            self.fixed.remove(&aux_node);
         }
     }
 

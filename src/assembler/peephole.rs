@@ -27,6 +27,16 @@ lazy_static! {
         RE_SYMBOL
     ))
     .unwrap();
+    static ref RE_MOVQ: Regex = Regex::new(&format!(
+        r"^\s*movq\s+(?<src>{}),\s*(?<dst>{})",
+        RE_REGISTER, RE_REGISTER
+    ))
+    .unwrap();
+    static ref RE_MOVQ_ZERO: Regex = Regex::new(&format!(
+        r"^\s*(?<inst>movq\s+\$0,\s*(?<dst>{}))",
+        RE_REGISTER
+    ))
+    .unwrap();
 }
 
 fn is_comment(line: &str) -> bool {
@@ -234,6 +244,33 @@ impl Assembler {
                     }
                 }
                 break;
+            }
+        }
+    }
+
+    // Remove moving registers to themselves, e.g.:
+    // ```asm
+    //   mov %rax, %rax
+    // ```
+    pub(super) fn remove_self_movs(&mut self) {
+        self.code.retain(|line| {
+            if let Some(mov) = RE_MOVQ.captures(line) {
+                let src = mov.name("src").unwrap().as_str();
+                let dst = mov.name("dst").unwrap().as_str();
+                src != dst || !dst.starts_with("%r") // Moving into non-64-bit register is not a no-op.
+            } else {
+                true
+            }
+        });
+    }
+
+    pub(super) fn replace_mov_0_with_xor(&mut self) {
+        for line in self.code.iter_mut() {
+            if let Some(mov) = RE_MOVQ_ZERO.captures(line) {
+                let dst = mov.name("dst").unwrap().as_str();
+                let inst_range = mov.name("inst").unwrap().range();
+                let xor = format!("xorq {}, {}", dst, dst);
+                line.replace_range(inst_range, &xor);
             }
         }
     }

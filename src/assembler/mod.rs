@@ -196,12 +196,12 @@ impl Assembler {
     }
 
     #[cfg(feature = "ilp")]
-    fn coalesce(l: &mut LoweredMethod) {
-        coalesce::Coalescer::new(l).solve_and_apply(l);
+    fn coalesce(l: &mut LoweredMethod, regs: &[&'static str]) {
+        coalesce::Coalescer::new_reg(l, regs).solve_and_apply(l);
     }
 
     #[cfg(not(feature = "ilp"))]
-    fn coalesce(_l: &mut LoweredMethod) {}
+    fn coalesce(_l: &mut LoweredMethod, regs: &[&'static str]) {}
 
     pub fn assemble_lowered(&mut self, file_name: &str) -> String {
         // todo: remove the .clone()
@@ -220,8 +220,9 @@ impl Assembler {
             // let max_reg = 3;
             Spiller::new(&self.program, &mut lowered, max_reg).spill();
             RegAllocator::new(&self.program, &mut lowered).allocate();
-            Self::coalesce(&mut lowered);
-            MethodAssembler::new(self, &lowered).assemble_method();
+            let regs = MethodAssembler::pre_order_regs(&lowered);
+            Self::coalesce(&mut lowered, &regs);
+            MethodAssembler::new(self, &lowered, regs).assemble_method();
         }
 
         self.emit_label("bounds_check.fail");
@@ -245,6 +246,8 @@ impl Assembler {
         self.remove_unnecessary_labels();
         self.remove_unreachable_code();
         self.remove_unnecessary_jmps();
+        self.remove_self_movs();
+        self.replace_mov_0_with_xor();
 
         let mut output = format!(".file 0 \"{}\"\n.data\n", file_name);
         for data in self.data.iter() {
@@ -341,8 +344,7 @@ pub struct MethodAssembler<'a> {
 }
 
 impl<'a> MethodAssembler<'a> {
-    fn new(asm: &'a mut Assembler, l: &'a LoweredMethod) -> Self {
-        // crate::utils::show_graphviz(&l.method.dump_graphviz());
+    fn pre_order_regs(l: &'a LoweredMethod) -> Vec<&'static str> {
         // if this method doesn't call any other functions, prefer caller-saved registers over callee-saved registers.
         let mut calls_other_functions = false;
         for (_, inst) in l.method.iter_insts() {
@@ -354,6 +356,11 @@ impl<'a> MethodAssembler<'a> {
         if !calls_other_functions {
             regs.reverse();
         }
+        regs
+    }
+
+    fn new(asm: &'a mut Assembler, l: &'a LoweredMethod, regs: Vec<&'static str>) -> Self {
+        // crate::utils::show_graphviz(&l.method.dump_graphviz());
         Self {
             asm,
             name: &l.method.name.inner,
@@ -398,6 +405,7 @@ impl<'a> MethodAssembler<'a> {
         // Compute stack spaces
         let mut stack_space = 0i64;
         let n_args = self.l.method.params.len();
+        let n_reg_args = n_args.min(6);
 
         // In our IR, the first n_args slots are reserved for arguments.
         // If we stick to this convention, this means we'll have to move all
@@ -406,33 +414,13 @@ impl<'a> MethodAssembler<'a> {
         // placed all argument-loading instructions at the beginning of the
         // method. If we detect that this is the case, we can skip the slow part
         // and attempt direct register-to-register moves.
-        let mut fast_args = true;
-
-        // First, identify the argument-loading instructions
-        let n_reg_args = n_args.min(6);
-        for inst_ref in self.l.method.block(self.l.method.entry).insts.iter() {
-            match self.l.method.inst(*inst_ref) {
-                Inst::Load(Address::Local(stack_slot)) if stack_slot.0 < n_reg_args => {
-                    self.arg_loading_insts.insert(*inst_ref);
-                }
-                _ => break,
+        let fast_args = match identify_fast_arg_insts(self.l) {
+            Some(arg_loading_insts) => {
+                self.arg_loading_insts = arg_loading_insts;
+                true
             }
-        }
-        // Then, make sure that these stack slots are not used in any other way.
-        for (inst_ref, inst) in self.l.method.iter_insts() {
-            if self.arg_loading_insts.contains(&inst_ref) {
-                continue;
-            }
-            if matches!(
-                inst,
-                Inst::Load(Address::Local(stack_slot)) | Inst::Store { addr: Address::Local(stack_slot), .. }
-                if stack_slot.0 < n_reg_args
-            ) {
-                fast_args = false;
-                self.arg_loading_insts.clear();
-                break;
-            }
-        }
+            None => false,
+        };
 
         for (i, (stack_slot_ref, stack_slot)) in self.l.method.iter_slack_slots().enumerate() {
             if i < n_args && i >= 6 {
@@ -997,7 +985,7 @@ impl<'a> MethodAssembler<'a> {
                     }
                 } else {
                     if asm_inst == "addq" {
-                        self.emit_code(format!("leaq ({},{}), {}", l, r, dst_reg));
+                        self.emit_code(format!("leaq ({}, {}), {}", l, r, dst_reg));
                         return;
                     }
                     self.emit_code(format!("movq {}, {}", l, dst_reg));
@@ -1124,6 +1112,7 @@ impl<'a> MethodAssembler<'a> {
         };
         let saving_regs = self.l.live_at[&next_pt]
             .iter()
+            .filter(|v| **v != inst_ref)
             .filter_map(|v| self.l.reg.get(v))
             .filter(|v| CALLER_SAVE_REGS.contains(&self.regs[**v]))
             .collect::<BTreeSet<_>>();
@@ -1415,6 +1404,34 @@ impl<'a> MethodAssembler<'a> {
             },
         }
     }
+}
+
+fn identify_fast_arg_insts(l: &LoweredMethod) -> Option<HashSet<InstRef>> {
+    let n_args = l.method.params.len();
+    let n_reg_args = n_args.min(6);
+    let mut arg_loading_insts = HashSet::new();
+    for inst_ref in l.method.block(l.method.entry).insts.iter() {
+        match l.method.inst(*inst_ref) {
+            Inst::Load(Address::Local(stack_slot)) if stack_slot.0 < n_reg_args => {
+                arg_loading_insts.insert(*inst_ref);
+            }
+            _ => break,
+        }
+    }
+    // Then, make sure that these stack slots are not used in any other way.
+    for (inst_ref, inst) in l.method.iter_insts() {
+        if arg_loading_insts.contains(&inst_ref) {
+            continue;
+        }
+        if matches!(
+            inst,
+            Inst::Load(Address::Local(stack_slot)) | Inst::Store { addr: Address::Local(stack_slot), .. }
+            if stack_slot.0 < n_reg_args
+        ) {
+            return None;
+        }
+    }
+    Some(arg_loading_insts)
 }
 
 // Test the fast division algorithm
