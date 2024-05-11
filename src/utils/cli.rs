@@ -45,6 +45,8 @@ pub enum Optimization {
     LoopUnrolling,
     #[clap(name = "indvar")]
     InductionVariable,
+    #[clap(name = "psr")]
+    PolynomialStrengthReduction,
     #[clap(name = "all")]
     All,
 }

@@ -18,6 +18,7 @@ pub mod gvnpre;
 pub mod indvar;
 pub mod licm;
 pub mod loop_utils;
+pub mod poly;
 pub mod rgae;
 pub mod ssa;
 pub mod unroll;
@@ -170,6 +171,7 @@ pub fn optimize(mut program: Program, optimizations: &[Optimization]) -> Program
             Optimization::LoopUnrolling,
             // Optimization::LoopInvariantCodeMotion,
             Optimization::InductionVariable,
+            Optimization::PolynomialStrengthReduction,
         ]);
     }
 
@@ -206,6 +208,12 @@ pub fn optimize(mut program: Program, optimizations: &[Optimization]) -> Program
         if optimizations.contains(&Optimization::CopyPropagation) {
             for method in program.methods.values_mut() {
                 copy_prop::propagate_copies(method);
+            }
+        }
+
+        if optimizations.contains(&Optimization::PolynomialStrengthReduction) {
+            for method in program.methods.values_mut() {
+                poly::polynomial_strength_reduction(method);
             }
         }
 
@@ -263,7 +271,6 @@ pub fn optimize(mut program: Program, optimizations: &[Optimization]) -> Program
     // for method in program.methods.values_mut() {
     //     if method.name.inner.as_ref() == "filter" {
     //         crate::utils::show_graphviz(&method.dump_graphviz());
-    //         // indvar::reduce_induction_variables(method);
     //     }
     // }
 

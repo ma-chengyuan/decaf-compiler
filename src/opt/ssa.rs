@@ -10,7 +10,7 @@ use crate::{
     utils::make_internal_ident,
 };
 
-use super::predecessors;
+use super::{copy_prop::propagate_copies, predecessors};
 
 struct ScalarLiveness {
     in_: Vec<HashSet<StackSlotRef>>,
@@ -402,6 +402,7 @@ pub fn destruct_ssa(program: &Program, method: &Method) -> Method {
 /// If a phi has only one argument that is not itself, it can simplified to a
 /// copy.
 pub fn simplify_phis(method: &mut Method) {
+    let mut changed = false;
     for block_ref in method.iter_block_refs() {
         let mut reduced: Vec<InstRef> = vec![];
         let mut first_non_phi = method.block(block_ref).insts.len();
@@ -435,5 +436,10 @@ pub fn simplify_phis(method: &mut Method) {
         insts.retain(|inst_ref| !reduced.contains(inst_ref));
         first_non_phi -= reduced.len();
         insts.splice(first_non_phi..first_non_phi, reduced);
+        changed = true;
+    }
+    if changed {
+        propagate_copies(method);
+        simplify_phis(method);
     }
 }
