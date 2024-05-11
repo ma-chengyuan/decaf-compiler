@@ -8,6 +8,7 @@ use good_lp::{
     constraint, highs, variable, Expression, ProblemVariables, ResolutionError, Solution,
     SolverModel, Variable,
 };
+use lazy_static::lazy_static;
 use petgraph::{
     algo::tarjan_scc,
     graphmap::{NodeTrait, UnGraphMap},
@@ -21,7 +22,9 @@ use super::{
 
 /// The time limit for the ILP solver in seconds.
 const HIGHS_TIME_LIMIT: f64 = 60.0; // 10 seconds / per function is pretty generous.
-const HIGHS_VERBOSE: bool = false; // Set to false to disable verbose output.
+lazy_static! {
+    static ref HIGHS_VERBOSE: bool = std::env::var("HIGHS_VERBOSE").is_ok();
+}
 
 pub trait CoalescingNode: NodeTrait {
     /// Makes a new auxiliary node. Auxillary node must satisfy the following
@@ -241,8 +244,10 @@ impl Coalescer<InstRef> {
         // Sanity check!
         assert!(self.max_color == l.max_reg);
         let fallback = if self.initial_solution.is_some() {
-            // self.colors = l.reg.clone();
-            // println!("init cost: {}", self.current_solution_cost());
+            if *HIGHS_VERBOSE {
+                self.colors = l.reg.clone();
+                println!("init cost: {}", self.current_solution_cost());
+            }
             self.solve_heuristic();
             // println!("heur cost: {}", self.current_solution_cost());
             self.colors.clone()
@@ -458,10 +463,10 @@ impl<T: CoalescingNode + Debug> Coalescer<T> {
             }
             model = model.set_solution(ilp_soln.into_iter());
         }
-        model.set_verbose(HIGHS_VERBOSE);
+        model.set_verbose(*HIGHS_VERBOSE);
         let start = std::time::Instant::now();
         let solution = model.solve()?;
-        if HIGHS_VERBOSE {
+        if *HIGHS_VERBOSE {
             println!("ILP took {:?}", start.elapsed());
         }
         let mut colors = HashMap::new();
@@ -477,7 +482,7 @@ impl<T: CoalescingNode + Debug> Coalescer<T> {
                 return Err(ResolutionError::Infeasible);
             }
         }
-        if HIGHS_VERBOSE {
+        if *HIGHS_VERBOSE {
             println!("validated ILP solution");
         }
         self.colors = colors;
