@@ -1,8 +1,8 @@
 import difflib
 import os
+import platform
 import subprocess
 from pathlib import Path
-import platform
 
 from test_util import TestCase
 
@@ -25,8 +25,8 @@ def main():
     total_cases = 0
     passed_cases = 0
 
-    os.system("cargo build")
-    exec_name = Path("target/debug/decaf-rust" + suffix)
+    os.system("cargo build --release")
+    exec_name = Path("target/release/decaf-rust" + suffix)
 
     def run(path):
         proc = subprocess.Popen(
@@ -80,9 +80,11 @@ def main():
                         continue
                     program = subprocess.Popen(
                         [
-                            "./docker_run.sh"
-                            if "macOS" in platform.platform()
-                            else "./test_program"
+                            (
+                                "./docker_run.sh"
+                                if "macOS" in platform.platform()
+                                else "./test_program"
+                            )
                         ],
                         stdout=subprocess.PIPE,
                         stderr=subprocess.PIPE,
