@@ -26,7 +26,7 @@ impl<'a> ArrayAccessOffsetNonMaterializer<'a> {
         } = &mut self.l;
 
         // Don's absorb absurdly large offsets.
-        let should_absorb = |offset: i64| (-1024..=1024).contains(&offset);
+        let should_absorb = |offset: i64| (-4096..=4096).contains(&offset);
         for inst_ref in (0..method.n_insts()).map(InstRef) {
             match method.inst(inst_ref) {
                 Inst::LoadArray { index, .. } | Inst::StoreArray { index, .. } => {
@@ -56,6 +56,10 @@ impl<'a> ArrayAccessOffsetNonMaterializer<'a> {
                         _ => {}
                     }
                     if let Some(modified_index) = modified_index {
+                        // println!(
+                        //     "Non-materializing array access offset in {}: {}+{}",
+                        //     inst_ref, modified_index, array_offsets[&inst_ref]
+                        // );
                         match method.inst_mut(inst_ref) {
                             Inst::LoadArray { index, .. } | Inst::StoreArray { index, .. } => {
                                 *index = modified_index;

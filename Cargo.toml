@@ -33,6 +33,7 @@ petgraph = "0.6"
 # ordered-float = "4.2"
 
 regex = "1.10"
+cachedhash = "0.2"
 
 # Requires libclang
 good_lp = { git = "https://github.com/ma-chengyuan/good_lp.git", rev = "07380b0", default-features = false, features = [

@@ -4,7 +4,7 @@
 
 use std::{cell::RefCell, collections::HashSet, rc::Rc};
 
-use crate::inter::ir::{BlockRef, Inst, Method, Terminator};
+use crate::inter::ir::{Address, BlockRef, Inst, Method, Terminator};
 
 use super::{
     dom::{compute_dominance, Dominance},
@@ -17,6 +17,11 @@ pub struct Loop {
     pub body: HashSet<BlockRef>,
     pub continue_: HashSet<BlockRef>, // Back edges
     pub break_: HashSet<BlockRef>,    // Exit edges
+
+    /// A set of tainted addresses; Useful for loop invariant analyss.
+    pub tainted_addr: HashSet<Address>,
+    /// Does the loop have a call instruction? Useful for loop invariant analysis.
+    pub has_call: bool,
 
     pub parent: Option<Rc<RefCell<Loop>>>,
 }
@@ -49,6 +54,44 @@ impl LoopAnalysis {
             &reverse_postorder(method),
             None,
         );
+        for block_ref in method.iter_block_refs() {
+            let Some(loop_) = ret.get_loop(block_ref) else {
+                continue;
+            };
+            let mut tainted_addr = HashSet::new();
+            let mut has_call = false;
+            for inst_ref in method.block(block_ref).insts.iter().copied() {
+                match method.inst(inst_ref) {
+                    Inst::Load(addr)
+                    | Inst::Store { addr, .. }
+                    | Inst::LoadArray { addr, .. }
+                    | Inst::StoreArray { addr, .. } => {
+                        tainted_addr.insert(addr.clone());
+                    }
+                    Inst::Initialize { stack_slot, .. } => {
+                        tainted_addr.insert(Address::Local(*stack_slot));
+                    }
+                    Inst::Call { .. } => {
+                        has_call = true;
+                    }
+                    _ => {}
+                }
+            }
+            if has_call || !tainted_addr.is_empty() {
+                let mut cur = loop_;
+                loop {
+                    cur = {
+                        let mut cur_ = cur.borrow_mut();
+                        cur_.has_call |= has_call;
+                        cur_.tainted_addr.extend(tainted_addr.iter().cloned());
+                        match &cur_.parent {
+                            Some(parent) => parent.clone(),
+                            None => break,
+                        }
+                    };
+                }
+            }
+        }
         ret
     }
 
@@ -111,6 +154,8 @@ impl LoopAnalysis {
                     body,
                     continue_,
                     break_,
+                    tainted_addr: HashSet::new(),
+                    has_call: false,
                     parent: parent.clone(),
                 }));
                 self.loops[header.0] = Some(loop_.clone());

@@ -29,7 +29,12 @@ impl fmt::Debug for PolyInner {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{}", self.c)?;
         for (t, c) in self.t.iter() {
-            write!(f, "+{}*{:?}", c, t)?;
+            if *c > 0 {
+                write!(f, " + ")?;
+            } else {
+                write!(f, " - ")?;
+            }
+            write!(f, "{}{:?}", c.abs(), CachedHash::get(t))?;
         }
         Ok(())
     }
@@ -97,7 +102,7 @@ impl Poly {
         }
     }
 
-    pub fn sub(&self, other: &Self) -> Option<Self> {
+    pub fn sub_nofail(&self, other: &Self) -> Self {
         let mut ret = Self::new(self.constant() - other.constant(), Default::default());
         let ret_terms = ret.terms_mut();
         for (t, c1) in self.terms().iter() {
@@ -114,14 +119,19 @@ impl Poly {
                 ret_terms.insert(t.clone(), -*c2);
             }
         }
-        if ret_terms.len() <= MAX_POLY_TERMS {
+        ret
+    }
+
+    pub fn sub(&self, other: &Self) -> Option<Self> {
+        let ret = self.sub_nofail(other);
+        if ret.terms().len() <= MAX_POLY_TERMS {
             Some(ret)
         } else {
             None
         }
     }
 
-    pub fn mul(&self, other: &Self) -> Option<Self> {
+    pub fn mul_nofail(&self, other: &Self) -> Self {
         let mut ret = Self::new(self.constant() * other.constant(), Default::default());
         let ret_terms = ret.terms_mut();
         for (t1, c1) in self.terms().iter() {
@@ -145,11 +155,35 @@ impl Poly {
             .filter(|(_, c)| **c != 0)
             .map(|(t, c)| (t.clone(), *c))
             .collect();
-        if ret_terms.len() <= MAX_POLY_TERMS {
+        ret
+    }
+
+    pub fn mul(&self, other: &Self) -> Option<Self> {
+        let ret = self.mul_nofail(other);
+        if ret.terms().len() <= MAX_POLY_TERMS {
             Some(ret)
         } else {
             None
         }
+    }
+
+    pub fn neg(&self) -> Self {
+        Self::new(
+            -self.constant(),
+            self.terms().iter().map(|(t, c)| (t.clone(), -c)).collect(),
+        )
+    }
+
+    pub fn is_one(&self) -> bool {
+        self.constant() == 1 && self.terms().is_empty()
+    }
+
+    pub fn is_zero(&self) -> bool {
+        self.constant() == 0 && self.terms().is_empty()
+    }
+
+    pub fn is_constant(&self) -> bool {
+        self.terms().is_empty()
     }
 
     pub fn from_inst(method: &Method, inst_ref: InstRef, map: &im::HashMap<InstRef, Poly>) -> Self {
@@ -200,6 +234,8 @@ pub fn polynomial_strength_reduction(method: &mut Method) {
                     if let Some(src) = avail.get(&val) {
                         // Check if the operation can be replaced with a copy.
                         *inst = Inst::Copy(*src);
+                    } else if let Some(src) = avail.get(&val.neg()) {
+                        *inst = Inst::Neg(*src);
                     } else if let Some((src, offset)) = avail_offset.get(&val.without_constant()) {
                         // Check if the operation can be replaced with an addition with constant.
                         let offset_ref = method.next_inst_before(

@@ -222,6 +222,51 @@ impl Inst {
         }
     }
 
+    pub fn for_each_inst_ref_copied<V>(&self, mut thunk: impl FnMut(InstRef) -> V) {
+        match self {
+            Inst::Phi(map) => {
+                for inst in map.values() {
+                    thunk(*inst);
+                }
+            }
+            Inst::Add(lhs, rhs)
+            | Inst::Sub(lhs, rhs)
+            | Inst::Mul(lhs, rhs)
+            | Inst::Div(lhs, rhs)
+            | Inst::Mod(lhs, rhs)
+            | Inst::Eq(lhs, rhs)
+            | Inst::Neq(lhs, rhs)
+            | Inst::Less(lhs, rhs)
+            | Inst::LessEq(lhs, rhs)
+            | Inst::StoreArray {
+                index: lhs,
+                value: rhs,
+                ..
+            } => {
+                thunk(*lhs);
+                thunk(*rhs);
+            }
+            Inst::Copy(operand)
+            | Inst::Neg(operand)
+            | Inst::Not(operand)
+            | Inst::Store { value: operand, .. }
+            | Inst::LoadArray { index: operand, .. } => {
+                thunk(*operand);
+            }
+            Inst::Call { args, .. } => {
+                for arg in args {
+                    thunk(*arg);
+                }
+            }
+            Inst::LoadConst(_)
+            | Inst::Load(_)
+            | Inst::Initialize { .. }
+            | Inst::PhiMem { .. }
+            | Inst::LoadStringLiteral(_)
+            | Inst::Illegal => {}
+        }
+    }
+
     pub fn for_each_stack_slot_ref<V>(&mut self, mut thunk: impl FnMut(&mut StackSlotRef) -> V) {
         match self {
             Inst::Initialize { stack_slot, .. } => {
