@@ -220,7 +220,8 @@ impl Assembler {
             // let max_reg = 3;
             Spiller::new(&self.program, &mut lowered, max_reg).spill();
             RegAllocator::new(&self.program, &mut lowered).allocate();
-            let regs = MethodAssembler::pre_order_regs(&lowered);
+            let mut regs = MethodAssembler::pre_order_regs(&lowered);
+            let _ = regs.split_off(max_reg);
             Self::coalesce(&mut lowered, &regs);
             MethodAssembler::new(self, &lowered, regs).assemble_method();
         }
