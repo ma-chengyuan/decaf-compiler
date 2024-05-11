@@ -1,3 +1,3 @@
 #!/usr/bin/env bash
 
-cargo build
+cargo build --release

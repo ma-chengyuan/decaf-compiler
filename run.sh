@@ -1,3 +1,3 @@
 #!/usr/bin/env bash
 
-target/debug/decaf-rust "$@"
+target/release/decaf-rust "$@"
