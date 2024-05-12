@@ -1,9 +1,13 @@
+#![allow(clippy::non_canonical_partial_ord_impl)]
+
 use core::fmt;
 use std::{
-    borrow::Borrow,
+    cell::RefCell,
     collections::{BTreeSet, HashMap, HashSet},
+    rc::Rc,
 };
 
+use derivative::Derivative;
 use extend::ext;
 use lazy_static::lazy_static;
 
@@ -24,6 +28,7 @@ use crate::{
         predecessors, reverse_postorder, split_critical_edges,
     },
     scan::location::Location,
+    utils::cli::Optimization,
 };
 
 use self::{
@@ -130,7 +135,7 @@ impl HashMap<InstRef, HashSet<InstRef>> {
 /// Use callee-saved registers for now
 // pub const REGS: [&str; 3] = ["%r12", "%r13", "%r14"];
 // pub const REGS: [&str; 4] = ["%r12", "%r13", "%r14", "%r15"];
-const CALLEE_SAVE_REGS: [&str; 5] = ["%r12", "%r13", "%r14", "%r15", "%rbx"];
+const CALLEE_SAVE_REGS: [&str; 6] = ["%r12", "%r13", "%r14", "%r15", "%rbx", "%rbp"];
 const CALLER_SAVE_REGS: [&str; 7] = ["%r8", "%r9", "%r10", "%r11", "%rcx", "%rdi", "%rsi"];
 const ARG_REGS: [&str; 6] = ["%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"];
 lazy_static! {
@@ -156,14 +161,21 @@ pub struct Assembler {
     data: Vec<String>,
     // corresponds to .text
     code: Vec<String>,
+
+    optimizations: HashSet<Optimization>,
 }
 
 impl Assembler {
-    pub fn new(program: Program) -> Self {
+    pub fn new(program: Program, optimizations: &[Optimization]) -> Self {
+        let mut optimizations: HashSet<_> = optimizations.iter().cloned().collect();
+        if optimizations.remove(&Optimization::All) {
+            optimizations.extend([Optimization::OmitFramePointer]);
+        }
         Self {
             program,
             data: Vec::new(),
             code: Vec::new(),
+            optimizations,
         }
     }
 
@@ -214,16 +226,26 @@ impl Assembler {
             ImmediateNonMaterializer::new(&mut lowered).run();
             ArrayAccessOffsetNonMaterializer::new(&mut lowered).run();
             TerminatorNonMaterializer::new(&mut lowered).run();
-            let max_reg = REGS.len();
+            let all_regs = {
+                let omit_frame_pointer =
+                    self.optimizations.contains(&Optimization::OmitFramePointer);
+                // Don't use %rbp as a register if omit_frame_pointer is disabled.
+                REGS.iter()
+                    .copied()
+                    .filter(|r| *r != "%rbp" || omit_frame_pointer)
+                    .collect::<Vec<_>>()
+            };
+            let max_reg = all_regs.len();
             // For debugging. Smaller max_reg pushes the spiller to limit where
             // more bugs are likely to be found.
             // let max_reg = 3;
+
+            let all_regs = &all_regs[..max_reg];
             Spiller::new(&self.program, &mut lowered, max_reg).spill();
             RegAllocator::new(&self.program, &mut lowered).allocate();
-            let mut regs = MethodAssembler::pre_order_regs(&lowered);
-            let _ = regs.split_off(max_reg);
-            Self::coalesce(&mut lowered, &regs);
-            MethodAssembler::new(self, &lowered, regs).assemble_method();
+            let ordered_regs = MethodAssembler::pre_order_regs(&lowered, all_regs);
+            Self::coalesce(&mut lowered, &ordered_regs);
+            MethodAssembler::new(self, &lowered, ordered_regs).assemble_method();
         }
 
         self.emit_label("bounds_check.fail");
@@ -315,11 +337,21 @@ impl Assembler {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Derivative)]
+#[derivative(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derivative(PartialOrd = "feature_allow_slow_enum")]
+#[derivative(Ord = "feature_allow_slow_enum")]
 enum AsmArg {
     Reg(&'static str),
     Imm(i64),
-    Stack(i64),
+    Stack {
+        slot_ref: StackSlotRef,
+        #[derivative(Debug = "ignore")]
+        #[derivative(PartialEq = "ignore")]
+        #[derivative(PartialOrd = "ignore")]
+        #[derivative(Ord = "ignore")]
+        resolver: Rc<RefCell<StackSlotAddressResolver>>,
+    },
 }
 
 impl fmt::Display for AsmArg {
@@ -327,7 +359,29 @@ impl fmt::Display for AsmArg {
         match self {
             AsmArg::Reg(reg) => write!(f, "{}", reg),
             AsmArg::Imm(imm) => write!(f, "${}", imm),
-            AsmArg::Stack(offset) => write!(f, "{}(%rbp)", offset),
+            AsmArg::Stack { slot_ref, resolver } => {
+                write!(f, "{}", resolver.borrow().resolve(*slot_ref, 0))
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct StackSlotAddressResolver {
+    omit_frame_pointer: bool,
+    /// Mapping from stack slots to their offsets from %rbp
+    stack_slot_to_bp_offset: HashMap<StackSlotRef, i64>,
+    /// %rbp - %rsp
+    rbp_minus_rsp: i64,
+}
+
+impl StackSlotAddressResolver {
+    fn resolve(&self, stack_slot_ref: StackSlotRef, offset: i64) -> String {
+        let offset = self.stack_slot_to_bp_offset[&stack_slot_ref] + offset;
+        if !self.omit_frame_pointer {
+            format!("{}(%rbp)", offset)
+        } else {
+            format!("{}(%rsp)", self.rbp_minus_rsp + offset)
         }
     }
 }
@@ -338,14 +392,14 @@ pub struct MethodAssembler<'a> {
     name: &'a str,
 
     regs: Vec<&'static str>,
-    stack_slot_to_offset: HashMap<StackSlotRef, i64>,
+    stack_slot_resolver: Rc<RefCell<StackSlotAddressResolver>>,
     tainted_callee_saved_regs: BTreeSet<&'static str>,
     pending_bounds_check: BTreeSet<PendingBoundsCheck>,
     arg_loading_insts: HashSet<InstRef>,
 }
 
 impl<'a> MethodAssembler<'a> {
-    fn pre_order_regs(l: &'a LoweredMethod) -> Vec<&'static str> {
+    fn pre_order_regs(l: &'a LoweredMethod, all_regs: &[&'static str]) -> Vec<&'static str> {
         // if this method doesn't call any other functions, prefer caller-saved registers over callee-saved registers.
         let mut calls_other_functions = false;
         for (_, inst) in l.method.iter_insts() {
@@ -353,19 +407,29 @@ impl<'a> MethodAssembler<'a> {
                 calls_other_functions = true;
             }
         }
-        let mut regs = REGS.clone(); // by default, prioritizes callee-saved over caller-saved
-        if !calls_other_functions {
-            regs.reverse();
+        let mut regs = all_regs.to_vec();
+        if calls_other_functions {
+            // Prefer callee-saved over caller-saved
+            // reg in CALLEE_SAVE_REGS will have key 0 and will be sorted before
+            // reg not in CALLEE_SAVE_REGS.
+            regs.sort_by_key(|&r| (!CALLEE_SAVE_REGS.contains(&r)) as i32);
+        } else {
+            // Prefer caller-saved over callee-saved
+            regs.sort_by_key(|&r| (!CALLER_SAVE_REGS.contains(&r)) as i32);
         }
         regs
     }
 
     fn new(asm: &'a mut Assembler, l: &'a LoweredMethod, regs: Vec<&'static str>) -> Self {
         // crate::utils::show_graphviz(&l.method.dump_graphviz());
+        let stack_slot_resolver = StackSlotAddressResolver {
+            omit_frame_pointer: asm.optimizations.contains(&Optimization::OmitFramePointer),
+            ..Default::default()
+        };
         Self {
             asm,
             name: &l.method.name.inner,
-            stack_slot_to_offset: HashMap::new(),
+            stack_slot_resolver: Rc::new(RefCell::new(stack_slot_resolver)),
             pending_bounds_check: BTreeSet::new(),
             tainted_callee_saved_regs: BTreeSet::new(),
             arg_loading_insts: HashSet::new(),
@@ -402,6 +466,48 @@ impl<'a> MethodAssembler<'a> {
         format!("{}.{}", self.name, block_ref)
     }
 
+    fn emit_push(&mut self, arg: &AsmArg) {
+        // "The PUSH ESP instruction pushes the value of the ESP register as it
+        // existed before the instruction was executed. If a PUSH instruction
+        // uses a memory operand in which the ESP register is used for computing
+        // the operand address, the address of the operand is computed before
+        // the ESP register is decremented."
+        match arg {
+            AsmArg::Reg(_) | AsmArg::Stack { .. } => {
+                self.emit_code(format!("pushq {}", arg));
+            }
+            // If immediate fits in 32 bits, use $imm
+            AsmArg::Imm(imm) => {
+                if *imm <= i32::MAX as i64 && *imm >= i32::MIN as i64 {
+                    self.emit_code(format!("pushq {}", arg));
+                } else {
+                    // Use rax as a temporary register
+                    self.emit_code(format!("movabsq ${}, %rax", imm));
+                    self.emit_code("pushq %rax");
+                }
+            }
+        }
+        self.stack_slot_resolver.borrow_mut().rbp_minus_rsp += 8;
+    }
+
+    fn emit_pop(&mut self, arg: &AsmArg) {
+        // If the ESP register is used as a base register for addressing a
+        // destination operand in memory, the POP instruction computes the
+        // effective address of the operand after it increments the ESP
+        // register.
+        self.stack_slot_resolver.borrow_mut().rbp_minus_rsp -= 8;
+        self.emit_code(format!("popq {}", arg));
+    }
+
+    fn emit_sp_adjust(&mut self, offset: i64) {
+        match offset.cmp(&0) {
+            std::cmp::Ordering::Greater => self.emit_code(format!("addq ${}, %rsp", offset)),
+            std::cmp::Ordering::Less => self.emit_code(format!("subq ${}, %rsp", -offset)),
+            std::cmp::Ordering::Equal => {}
+        }
+        self.stack_slot_resolver.borrow_mut().rbp_minus_rsp -= offset;
+    }
+
     fn emit_prologue(&mut self) {
         // Compute stack spaces
         let mut stack_space = 0i64;
@@ -423,6 +529,7 @@ impl<'a> MethodAssembler<'a> {
             None => false,
         };
 
+        let mut resolver = self.stack_slot_resolver.borrow_mut();
         for (i, (stack_slot_ref, stack_slot)) in self.l.method.iter_slack_slots().enumerate() {
             if i < n_args && i >= 6 {
                 // Arguments 6 and above are on the stack already. They will be taken care of later.
@@ -435,9 +542,12 @@ impl<'a> MethodAssembler<'a> {
                 continue;
             }
             stack_space += stack_slot.ty.size() as i64;
-            self.stack_slot_to_offset
+            resolver
+                .stack_slot_to_bp_offset
                 .insert(stack_slot_ref, -stack_space);
         }
+        let omit_frame_pointer = resolver.omit_frame_pointer;
+        std::mem::drop(resolver);
         self.tainted_callee_saved_regs = self
             .l
             .reg
@@ -445,29 +555,28 @@ impl<'a> MethodAssembler<'a> {
             .map(|&r| self.regs[r])
             .filter(|&r| CALLEE_SAVE_REGS.contains(&r))
             .collect::<BTreeSet<_>>();
-        // Align stack space to 16 bytes
-        stack_space = (stack_space + 15) & !15;
-        if self.tainted_callee_saved_regs.len() % 2 == 1 {
-            // Extra 8 bytes to ensure stack is aligned to 16 bytes after
-            // pushing all tainted callee-saved registers
-            stack_space += 8;
-        }
-
         self.emit_code(format!(
             ".loc 0 {} {}",
             self.l.method.span.start().line,
             self.l.method.span.start().column
         ));
-        self.emit_code("push %rbp".to_string());
-        self.emit_code("movq %rsp, %rbp".to_string());
-        self.emit_code(format!("subq ${}, %rsp", stack_space));
+        if !omit_frame_pointer {
+            self.emit_code("pushq %rbp");
+            self.emit_code("movq %rsp, %rbp".to_string());
+        }
+        stack_space = if (self.tainted_callee_saved_regs.len() % 2 == 1) ^ omit_frame_pointer {
+            // Round up to nearest 16k + 8
+            ((stack_space + 8 + 15) & !15) - 8
+        } else {
+            // Round up to nearest 16k
+            (stack_space + 15) & !15
+        };
+        self.emit_sp_adjust(-stack_space);
 
         // Save all callee-saved registers
-        let mut pushes = vec![];
-        for reg in self.tainted_callee_saved_regs.iter() {
-            pushes.push(format!("pushq {}", reg));
+        for reg in self.tainted_callee_saved_regs.clone() {
+            self.emit_push(&AsmArg::Reg(reg));
         }
-        pushes.into_iter().for_each(|push| self.emit_code(push));
 
         if fast_args {
             let mut par_copies = HashSet::new();
@@ -500,26 +609,43 @@ impl<'a> MethodAssembler<'a> {
             let method = &self.l.method;
             for (arg_idx, arg_slot_iter) in method.iter_slack_slots().enumerate().take(n_reg_args) {
                 self.emit_code(format!(
-                    "movq {}, {}(%rbp)",
-                    ARG_REGS[arg_idx], self.stack_slot_to_offset[&arg_slot_iter.0]
+                    "movq {}, {}",
+                    ARG_REGS[arg_idx],
+                    self.stack_slot_resolver
+                        .borrow()
+                        .resolve(arg_slot_iter.0, 0)
                 ));
             }
         }
-        let mut stack_offset = 16; // return address is 8 bytes. saved rbp is also 8 bytes.
+
+        let mut stack_offset = if omit_frame_pointer { 8 } else { 16 };
+        let mut resolver = self.stack_slot_resolver.borrow_mut();
         for (arg_slot_ref, arg_slot) in self.l.method.iter_slack_slots().take(n_args).skip(6) {
-            self.stack_slot_to_offset.insert(arg_slot_ref, stack_offset);
+            resolver
+                .stack_slot_to_bp_offset
+                .insert(arg_slot_ref, stack_offset);
             stack_offset += arg_slot.ty.size() as i64;
         }
     }
 
     fn emit_epilogue(&mut self) {
         // Restore all callee-saved registers
+        let rbp_minus_rsp = self.stack_slot_resolver.borrow().rbp_minus_rsp;
         for reg in self.tainted_callee_saved_regs.clone().into_iter().rev() {
-            self.emit_code(format!("popq {}", reg));
+            self.emit_pop(&AsmArg::Reg(reg));
         }
         // Restore stack frame
-        self.emit_code("leave");
+        let omit_frame_pointer = self.stack_slot_resolver.borrow().omit_frame_pointer;
+        if !omit_frame_pointer {
+            self.emit_code("leave");
+        } else {
+            let rbp_minus_rsp = self.stack_slot_resolver.borrow().rbp_minus_rsp;
+            self.emit_sp_adjust(rbp_minus_rsp);
+        }
         self.emit_code("ret");
+        // Reset rbp_minus_rsp to the value before the prologue so code gen for
+        // other blocks can move on.
+        self.stack_slot_resolver.borrow_mut().rbp_minus_rsp = rbp_minus_rsp;
     }
 
     fn emit_block_label(&mut self, block_ref: BlockRef) {
@@ -530,7 +656,7 @@ impl<'a> MethodAssembler<'a> {
         }
     }
 
-    fn reg(&self, inst_ref: impl Borrow<InstRef>) -> &'static str {
+    fn reg(&self, inst_ref: impl std::borrow::Borrow<InstRef>) -> &'static str {
         let inst_ref = inst_ref.borrow();
         if let Some(reg) = self.l.reg.get(inst_ref) {
             self.regs[*reg]
@@ -687,6 +813,7 @@ impl<'a> MethodAssembler<'a> {
 
         for block_ref in rev_postorder.iter().cloned() {
             self.emit_block_label(block_ref);
+            let rbp_minus_rsp_before = self.stack_slot_resolver.borrow().rbp_minus_rsp;
             let insts = &self.l.method.block(block_ref).insts;
             // Keeps the verified bounds of each array access index so far.
             let mut bounds: HashMap<InstRef, (i64, i64)> = HashMap::new();
@@ -786,8 +913,8 @@ impl<'a> MethodAssembler<'a> {
                         }
                         Address::Local(stack_slot) => {
                             self.emit_code(format!(
-                                "movq {}(%rbp), {}",
-                                self.stack_slot_to_offset[stack_slot],
+                                "movq {}, {}",
+                                self.stack_slot_resolver.borrow().resolve(*stack_slot, 0),
                                 self.reg(inst_ref)
                             ));
                         }
@@ -798,9 +925,9 @@ impl<'a> MethodAssembler<'a> {
                         }
                         Address::Local(stack_slot) => {
                             self.emit_code(format!(
-                                "movq {}, {}(%rbp)",
+                                "movq {}, {}",
                                 self.reg(value),
-                                self.stack_slot_to_offset[stack_slot]
+                                self.stack_slot_resolver.borrow().resolve(*stack_slot, 0)
                             ));
                         }
                     },
@@ -853,7 +980,7 @@ impl<'a> MethodAssembler<'a> {
                         }
                     }
                     Inst::Initialize { stack_slot, value } => {
-                        self.emit_local_initialize(value, self.stack_slot_to_offset[&stack_slot])
+                        self.emit_local_initialize(value, *stack_slot)
                     }
                     Inst::LoadStringLiteral(s) => {
                         let str_name = format!("str_{}", self.asm.data.len());
@@ -875,6 +1002,8 @@ impl<'a> MethodAssembler<'a> {
             // Handle phis
             self.emit_succeeding_phis(block_ref);
             self.emit_terminator(block_ref);
+            let rbp_minus_rsp_after = self.stack_slot_resolver.borrow().rbp_minus_rsp;
+            assert_eq!(rbp_minus_rsp_before, rbp_minus_rsp_after);
         }
         self.flush_bounds_check();
     }
@@ -904,17 +1033,18 @@ impl<'a> MethodAssembler<'a> {
                 format!("{}(,1)", sym_name)
             }
             (Address::Local(stack_slot), AsmArg::Reg(reg)) => {
-                format!(
-                    "{}(%rbp, {}, {})",
-                    self.stack_slot_to_offset[stack_slot] + offset * elem_size,
-                    reg,
-                    elem_size
-                )
+                let mut resolved = self
+                    .stack_slot_resolver
+                    .borrow()
+                    .resolve(*stack_slot, offset * elem_size);
+                resolved.pop(); // Remove the ')'
+                resolved.push_str(&format!(", {}, {})", reg, elem_size));
+                resolved
             }
-            (Address::Local(stack_slot), AsmArg::Imm(i)) => {
-                let offset = self.stack_slot_to_offset[stack_slot] + (i + offset) * elem_size;
-                format!("{}(%rbp)", offset)
-            }
+            (Address::Local(stack_slot), AsmArg::Imm(i)) => self
+                .stack_slot_resolver
+                .borrow()
+                .resolve(*stack_slot, (i + offset) * elem_size),
             _ => unreachable!(),
         }
     }
@@ -1084,19 +1214,27 @@ impl<'a> MethodAssembler<'a> {
             for step in serialize_copies(par_copies, None) {
                 match step {
                     SerializedStep::Copy { from, to } => {
-                        let from = self.stack_slot_to_offset[&StackSlotRef(from)];
-                        let to = self.stack_slot_to_offset[&StackSlotRef(to)];
-                        self.emit_code(format!("movq {}(%rbp), %rax", from));
-                        self.emit_code(format!("movq %rax, {}(%rbp)", to));
+                        let resolver = self.stack_slot_resolver.borrow();
+                        let from = resolver.resolve(StackSlotRef(from), 0);
+                        let to = resolver.resolve(StackSlotRef(to), 0);
+                        std::mem::drop(resolver);
+                        self.emit_code(format!("movq {}, %rax", from));
+                        self.emit_code(format!("movq %rax, {}", to));
                     }
                     SerializedStep::Swap(a, b) => {
                         // Push pop
-                        let a = self.stack_slot_to_offset[&StackSlotRef(a)];
-                        let b = self.stack_slot_to_offset[&StackSlotRef(b)];
-                        self.emit_code(format!("pushq {}(%rbp)", a));
-                        self.emit_code(format!("pushq {}(%rbp)", b));
-                        self.emit_code(format!("popq {}(%rbp)", a));
-                        self.emit_code(format!("popq {}(%rbp)", b));
+                        let a = AsmArg::Stack {
+                            slot_ref: StackSlotRef(a),
+                            resolver: self.stack_slot_resolver.clone(),
+                        };
+                        let b = AsmArg::Stack {
+                            slot_ref: StackSlotRef(b),
+                            resolver: self.stack_slot_resolver.clone(),
+                        };
+                        self.emit_push(&a);
+                        self.emit_push(&b);
+                        self.emit_pop(&a);
+                        self.emit_pop(&b);
                     }
                 }
             }
@@ -1118,32 +1256,18 @@ impl<'a> MethodAssembler<'a> {
             .filter(|v| CALLER_SAVE_REGS.contains(&self.regs[**v]))
             .collect::<BTreeSet<_>>();
         for reg in saving_regs.iter() {
-            self.emit_code(format!("pushq {}", self.regs[**reg]));
+            self.emit_push(&AsmArg::Reg(self.regs[**reg]));
         }
 
         let mut stack_space_for_args = 0;
         let n_remaining_args = args.len().saturating_sub(6);
         if (n_remaining_args + saving_regs.len()) % 2 == 1 {
             // Align stack to 16 bytes
-            self.emit_code("subq $8, %rsp".to_string());
+            self.emit_sp_adjust(-8);
             stack_space_for_args += 8;
         }
         for arg_ref in args.iter().skip(6).rev() {
-            match self.arg(inst_ref, *arg_ref) {
-                arg @ (AsmArg::Reg(_) | AsmArg::Stack(_)) => {
-                    self.emit_code(format!("pushq {}", arg));
-                }
-                // If immediate fits in 32 bits, use $imm
-                AsmArg::Imm(imm) => {
-                    if imm <= i32::MAX as i64 && imm >= i32::MIN as i64 {
-                        self.emit_code(format!("pushq ${}", imm));
-                    } else {
-                        // Use rax as a temporary register
-                        self.emit_code(format!("movq ${}, %rax", imm));
-                        self.emit_code("pushq %rax");
-                    }
-                }
-            }
+            self.emit_push(&self.arg(inst_ref, *arg_ref));
             stack_space_for_args += 8;
         }
 
@@ -1187,14 +1311,14 @@ impl<'a> MethodAssembler<'a> {
         }
         self.emit_code(format!("call {}", callee_name));
         if stack_space_for_args > 0 {
-            self.emit_code(format!("addq ${}, %rsp", stack_space_for_args));
+            self.emit_sp_adjust(stack_space_for_args);
         }
         let returns_value = match self.asm.program.methods.get(&callee_name.to_string()) {
             Some(method) => method.return_ty != Type::Void,
             None => true,
         };
         for reg in saving_regs.iter().rev() {
-            self.emit_code(format!("popq {}", self.regs[**reg]));
+            self.emit_pop(&AsmArg::Reg(self.regs[**reg]));
         }
         if returns_value && self.l.reg.contains_key(&inst_ref) {
             self.emit_code(format!("movq %rax, {}", self.reg(inst_ref)));
@@ -1217,8 +1341,10 @@ impl<'a> MethodAssembler<'a> {
                         .spill_slots
                         .get(&arg_ref)
                         .expect("spill slot not found");
-                    let offset = self.stack_slot_to_offset[spill_slot];
-                    AsmArg::Stack(offset)
+                    AsmArg::Stack {
+                        slot_ref: *spill_slot,
+                        resolver: self.stack_slot_resolver.clone(),
+                    }
                 }
             }
         }
@@ -1365,17 +1491,25 @@ impl<'a> MethodAssembler<'a> {
         }
     }
 
-    fn emit_local_initialize(&mut self, c: &Const, mut stack_offset: i64) {
+    fn emit_local_initialize(&mut self, c: &Const, stack_slot_ref: StackSlotRef) {
         match c {
             Const::Int(_) | Const::Bool(_) => {
-                self.asm
-                    .load_int_or_bool_const(c, &format!("{}(%rbp)", stack_offset));
+                self.asm.load_int_or_bool_const(
+                    c,
+                    &self.stack_slot_resolver.borrow().resolve(stack_slot_ref, 0),
+                );
             }
             Const::Array(arr_vals) => {
+                let mut offset = 0;
                 for val in arr_vals.iter() {
-                    self.asm
-                        .load_int_or_bool_const(val, &format!("{}(%rbp)", stack_offset));
-                    stack_offset += val.size() as i64;
+                    self.asm.load_int_or_bool_const(
+                        val,
+                        &self
+                            .stack_slot_resolver
+                            .borrow()
+                            .resolve(stack_slot_ref, offset),
+                    );
+                    offset += val.size() as i64;
                 }
             }
             Const::Repeat(val, n) => match &**val {
@@ -1383,23 +1517,36 @@ impl<'a> MethodAssembler<'a> {
                     // TODO: use rep stosq
                     // Use memset to zero out the memory
                     for reg in CALLER_SAVE_REGS.iter() {
-                        self.emit_code(format!("pushq {}", reg));
+                        self.emit_push(&AsmArg::Reg(reg));
                     }
-                    self.emit_code("subq $8, %rsp");
-                    self.emit_code(format!("leaq {}(%rbp), %rdi", stack_offset));
+                    if CALLER_SAVE_REGS.len() % 2 == 1 {
+                        self.emit_sp_adjust(-8);
+                    }
+                    self.emit_code(format!(
+                        "leaq {}, %rdi",
+                        self.stack_slot_resolver.borrow().resolve(stack_slot_ref, 0)
+                    ));
                     self.emit_code("movq $0, %rsi");
                     self.emit_code(format!("movq ${}, %rdx", n * val.size()));
                     self.emit_code("call memset");
-                    self.emit_code("addq $8, %rsp");
+                    if CALLER_SAVE_REGS.len() % 2 == 1 {
+                        self.emit_sp_adjust(8);
+                    }
                     for reg in CALLER_SAVE_REGS.iter().rev() {
-                        self.emit_code(format!("popq {}", reg));
+                        self.emit_pop(&AsmArg::Reg(reg));
                     }
                 }
                 _ => {
+                    let mut offset = 0;
                     for _ in 0..*n {
-                        self.asm
-                            .load_int_or_bool_const(val, &format!("{}(%rbp)", stack_offset));
-                        stack_offset += val.size() as i64;
+                        self.asm.load_int_or_bool_const(
+                            val,
+                            &self
+                                .stack_slot_resolver
+                                .borrow()
+                                .resolve(stack_slot_ref, offset),
+                        );
+                        offset += val.size() as i64;
                     }
                 }
             },

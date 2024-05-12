@@ -51,7 +51,7 @@ impl fmt::Display for BlockRef {
 
 /// An opaque reference to a stack slot.
 /// Stack slots are used to represent local variables and function parameters.
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct StackSlotRef(pub usize);
 
 impl fmt::Debug for StackSlotRef {

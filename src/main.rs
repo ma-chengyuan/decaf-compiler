@@ -139,7 +139,7 @@ fn main_assembler(args: utils::cli::Args, mut writer: Box<dyn std::io::Write>) {
         }
     };
     program = opt::optimize(program, &args.opt);
-    let mut assembler = Assembler::new(program);
+    let mut assembler = Assembler::new(program, &args.opt);
     let file_name = args
         .input
         .clone()

@@ -47,6 +47,8 @@ pub enum Optimization {
     InductionVariable,
     #[clap(name = "psr")]
     PolynomialStrengthReduction,
+    #[clap(name = "omit-frame-pointer")]
+    OmitFramePointer,
     #[clap(name = "all")]
     All,
 }
