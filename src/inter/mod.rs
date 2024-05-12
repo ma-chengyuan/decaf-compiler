@@ -109,6 +109,7 @@ impl IrBuilder {
                                 init: self.global_inits.remove(&*v.name.inner).unwrap(),
                                 ty: v.ty,
                                 name: v.name,
+                                is_const: v.is_const,
                             },
                         )
                     })

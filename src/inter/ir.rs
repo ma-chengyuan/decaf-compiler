@@ -996,6 +996,7 @@ pub struct GlobalVar {
     pub name: Ident,
     pub ty: Type,
     pub init: Const,
+    pub is_const: bool,
 }
 
 #[derive(Debug, Clone)]

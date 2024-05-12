@@ -230,9 +230,11 @@ pub fn optimize(mut program: Program, optimizations: &[Optimization]) -> Program
 
         // Constant folding
         if optimizations.contains(&Optimization::ConstantFolding) {
-            for method in program.methods.values_mut() {
-                constant_folding::fold_constants(method);
+            let mut methods = std::mem::take(&mut program.methods);
+            for method in methods.values_mut() {
+                constant_folding::fold_constants(&program, method);
             }
+            program.methods = methods;
         }
 
         // Copy propagation

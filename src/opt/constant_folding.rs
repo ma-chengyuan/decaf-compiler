@@ -2,10 +2,10 @@ use std::collections::HashMap;
 
 use crate::inter::{
     constant::Const,
-    ir::{Inst, Method},
+    ir::{Address, Inst, Method, Program},
 };
 
-pub fn fold_constants(method: &mut Method) {
+pub fn fold_constants(program: &Program, method: &mut Method) {
     let dom = crate::opt::dom::compute_dominance(method);
     let mut constant_instructions = HashMap::new();
 
@@ -15,6 +15,12 @@ pub fn fold_constants(method: &mut Method) {
             match method.inst_mut(inst) {
                 Inst::LoadConst(value) => {
                     const_result = Some(value.clone());
+                }
+                Inst::Load(Address::Global(name)) => {
+                    let global_var = &program.globals[&name.to_string()];
+                    if global_var.is_const {
+                        const_result = Some(global_var.init.clone());
+                    }
                 }
                 Inst::Copy(copied_inst) => {
                     const_result = constant_instructions.get(copied_inst).cloned();
