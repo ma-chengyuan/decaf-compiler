@@ -196,7 +196,7 @@ pub fn optimize(mut program: Program, optimizations: &[Optimization]) -> Program
             // Optimization::CommonSubexpressionElimination, // Superseded by GVNPRE
             Optimization::ConstantFolding,
             // Optimization::ArraySplitting,
-            // Optimization::FunctionInlining,
+            Optimization::FunctionInlining,
             Optimization::RedundantGlobalAndArrayAccessElimination,
             Optimization::DeadArrayStoreElimination,
             Optimization::LoopUnrolling,
