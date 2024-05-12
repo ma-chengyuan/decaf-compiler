@@ -1,9 +1,10 @@
 //! Data structure for Belady's spill heuristics
 
 #![allow(dead_code)]
-use std::{collections::VecDeque, fmt};
-
-use im::HashMap;
+use std::{
+    collections::{BTreeMap, HashSet, VecDeque},
+    fmt,
+};
 
 use crate::{
     assembler::NonMaterializedArgMapExt,
@@ -25,9 +26,12 @@ use super::{ProgPt, Spiller};
 /// however, is that lookups are O(log n).
 #[derive(Debug, Clone, Default)]
 pub struct BeladyMap {
-    base: HashMap<InstRef, isize>,
+    base: im::HashMap<InstRef, isize>,
     offset: isize,
 }
+
+const WEIGHT_INCREMENT: isize = 1000;
+const WEIGHTED_SUM: bool = true;
 
 impl BeladyMap {
     /// Gets the distance to the last use of an instruction, or `None` if the
@@ -61,7 +65,7 @@ impl BeladyMap {
 
     /// Step one step back.
     pub fn increment_all(&mut self) {
-        self.offset += 1;
+        self.offset += WEIGHT_INCREMENT;
     }
 
     /// Returns an iterator over the map.
@@ -88,6 +92,15 @@ impl BeladyMap {
         let mut keys = self.iter().collect::<Vec<_>>();
         keys.sort_by_key(|(k, _)| k.0);
         keys
+    }
+
+    /// Return if two maps have the same key.
+    fn key_eq(&self, other: &BeladyMap) -> bool {
+        if self.len() != other.len() {
+            return false;
+        }
+        self.base.keys().all(|k| other.base.contains_key(k))
+            && other.base.keys().all(|k| self.base.contains_key(k))
     }
 }
 
@@ -136,7 +149,7 @@ impl Spiller<'_> {
         let postorder = self.l.dom.postorder(self.l.method.entry);
         let mut q = VecDeque::new();
         let mut in_queue = vec![false; self.l.method.n_blocks()];
-        for block in postorder {
+        for block in postorder.iter().copied() {
             q.push_back(block);
             in_queue[block.0] = true;
         }
@@ -151,6 +164,15 @@ impl Spiller<'_> {
                 }
             }
         }
+        // If we are using weighted sum. It's no longer a lattice, and convergence is not guaranteed.
+        // So we need to run for a few more iterations.
+        if WEIGHTED_SUM {
+            for _ in 0..10 {
+                for block_ref in postorder.iter().copied() {
+                    self.eval_spill_heuristic_for_block(block_ref);
+                }
+            }
+        }
     }
 
     /// Updates the spill heuristic map at a program point. Returns if the map
@@ -160,7 +182,12 @@ impl Spiller<'_> {
         self.spill_heuristic
             .entry(prog_pt)
             .and_modify(|h_cur| {
-                if *h_cur != *h {
+                let different = if WEIGHTED_SUM {
+                    !h_cur.key_eq(h)
+                } else {
+                    h_cur != h
+                };
+                if different {
                     changed = true;
                     *h_cur = h.clone();
                 }
@@ -176,33 +203,56 @@ impl Spiller<'_> {
     fn eval_spill_heuristic_for_block(&mut self, block_ref: BlockRef) -> bool {
         let mut h = BeladyMap::default();
         // Compute spill heuristic backwards.
-        // h is the union (min-merge) of the spill heuristic of all successors.
+        let mut to_merge: Vec<(BeladyMap, f64)> = vec![];
+        let mut phi_dsts: HashSet<InstRef> = HashSet::new();
+        let mut phi_srcs: HashSet<InstRef> = HashSet::new();
         for_each_successor(&self.l.method, block_ref, |succ| {
             let first_pt = self.l.method.first_prog_pt(succ);
             if let Some(h_successor) = self.spill_heuristic.get(&first_pt) {
-                h.merge_min(h_successor);
+                // h.merge_min(h_successor);
+                to_merge.push((h_successor.clone(), self.l.loops.get_freq(succ) as f64));
             }
-            for inst_ref in self.l.method.block(succ).insts.iter() {
-                match self.l.method.inst(*inst_ref) {
-                    Inst::Phi(_) => h.remove(inst_ref),
-                    Inst::PhiMem { .. } => continue,
-                    _ => break,
-                }
-            }
-        });
-        for_each_successor(&self.l.method, block_ref, |succ| {
             for inst_ref in self.l.method.block(succ).insts.iter() {
                 match self.l.method.inst(*inst_ref) {
                     Inst::Phi(map) => {
-                        // Phi function at the successor block means that the
-                        // value is immediately used
-                        h.insert(map[&block_ref], 0);
+                        phi_dsts.insert(*inst_ref);
+                        phi_srcs.insert(map[&block_ref]);
                     }
                     Inst::PhiMem { .. } => continue,
                     _ => break,
                 }
             }
         });
+        let mut all_vars = to_merge
+            .iter()
+            .flat_map(|(h, _)| h.base.keys().copied())
+            .collect::<HashSet<_>>();
+        all_vars.retain(|v| !phi_dsts.contains(v));
+        for var_ref in all_vars {
+            // Compute weighed sum
+            if WEIGHTED_SUM {
+                let mut num = 0.0;
+                let mut den = 1e-6; // Avoid division by zero.
+                for (h, weight) in to_merge.iter() {
+                    if h.is_live(&var_ref) {
+                        num += weight * h.get(&var_ref) as f64;
+                        den += weight;
+                    }
+                }
+                h.insert(var_ref, ((num / den).round() as isize).max(0));
+            } else {
+                let min = to_merge
+                    .iter()
+                    .filter(|(h, _)| h.is_live(&var_ref))
+                    .map(|(h, _)| h.get(&var_ref))
+                    .min()
+                    .unwrap();
+                h.insert(var_ref, min);
+            }
+        }
+        for phi_src in phi_srcs.iter() {
+            h.insert(*phi_src, 0);
+        }
         h.increment_all(); // Increase distance by one. One for the edge.
         if !self.update_spill_heuristic(ProgPt::AfterTerm(block_ref), &h) {
             return false;
