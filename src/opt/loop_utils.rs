@@ -8,7 +8,7 @@ use crate::inter::ir::{Address, BlockRef, Inst, Method, Terminator};
 
 use super::{
     dom::{compute_dominance, Dominance},
-    for_each_successor, predecessors, reverse_postorder,
+    for_each_successor, predecessors, reverse_postorder, reverse_postorder_within,
 };
 
 #[derive(Debug, Clone)]
@@ -32,6 +32,10 @@ impl Loop {
             Some(parent) => parent.borrow().depth() + 1,
             None => 0,
         }
+    }
+
+    pub fn body_reverse_postorder(&self, method: &Method) -> Vec<BlockRef> {
+        reverse_postorder_within(method, self.header, &self.body)
     }
 }
 

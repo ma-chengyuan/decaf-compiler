@@ -194,6 +194,7 @@ impl Poly {
             Inst::LoadConst(Const::Int(x)) => Self::from_int(*x),
             Inst::LoadConst(Const::Bool(x)) => Self::from_int(*x as i64),
             Inst::Copy(src) => Self::from_inst(method, *src, map),
+            Inst::Neg(src) => Self::from_inst(method, *src, map).neg(),
             Inst::Add(lhs, rhs) => Self::from_inst(method, *lhs, map)
                 .add(&Self::from_inst(method, *rhs, map))
                 .unwrap_or_else(|| Self::from_term(inst_ref)),
@@ -221,20 +222,31 @@ pub fn polynomial_strength_reduction(method: &mut Method) {
         method: &mut Method,
         block_ref: BlockRef,
         dom_tree: &[Vec<BlockRef>],
+        // Map from instruction to polynomial
         mut map: im::HashMap<InstRef, Poly>,
-        mut avail: im::HashMap<Poly, InstRef>,
-        // mut avail_list: im::Vector<Poly>,
+        // Map from polynomial to the first instruction that computes it, plus
+        // its distance to the top of the method CFG along the dominator tree
+        mut avail: im::HashMap<Poly, (InstRef, usize)>,
+        // Map a constant-free polynomial to the first instruction that computes
+        // it, plus the constant part
         mut avail_offset: im::HashMap<Poly, (InstRef, i64)>,
     ) {
         for inst_ref in method.block(block_ref).insts.clone() {
             let val = Poly::from_inst(method, inst_ref, &map);
             let inst = method.inst_mut(inst_ref);
             match inst {
-                Inst::Mul(_, _) | Inst::Add(_, _) | Inst::Sub(_, _) => {
-                    if let Some(src) = avail.get(&val) {
+                Inst::Neg(_) => {
+                    if let Some((src, _)) = avail.get(&val) {
                         // Check if the operation can be replaced with a copy.
                         *inst = Inst::Copy(*src);
-                    } else if let Some(src) = avail.get(&val.neg()) {
+                    }
+                }
+                Inst::Mul(_, _) | Inst::Add(_, _) | Inst::Sub(_, _) => {
+                    if let Some((src, _)) = avail.get(&val) {
+                        // Check if the operation can be replaced with a copy.
+                        *inst = Inst::Copy(*src);
+                    } else if let Some((src, _)) = avail.get(&val.neg()) {
+                        // Check if the operation can be replaced with a negation.
                         *inst = Inst::Neg(*src);
                     } else if let Some((src, offset)) = avail_offset.get(&val.without_constant()) {
                         // Check if the operation can be replaced with an addition with constant.
@@ -245,31 +257,53 @@ pub fn polynomial_strength_reduction(method: &mut Method) {
                         );
                         *method.inst_mut(inst_ref) = Inst::Add(*src, offset_ref);
                     } else if let Inst::Mul(_, _) = inst {
-                        // Check if the operation can be replaced with an addition or subtraction two values.
-                        'outer: for (p1, lhs_ref) in avail.iter() {
+                        // Check if the operation can be replaced with an
+                        // addition or subtraction of two values.
+                        // The algorithm here is deterministic in order to make
+                        // the pass idempotent.
+                        // If there are multiple possible replacements, we
+                        // choose the one with the smallest "order." That is, we
+                        // choose the one that is closest
+                        // to the top of the method CFG. Hopefully many of
+                        // instructions that were previously interdependent will
+                        // be replaced by those that only depend on a select few
+                        // instructions that are close to the top of the method
+                        // CFG. Then most of them will be eliminated by the dead
+                        // code elimination pass.
+                        let mut best = (usize::MAX, usize::MAX);
+                        for (p1, (lhs_ref, lhs_ord)) in avail.iter() {
                             if let Some(p2) = val.sub(p1) {
                                 // val = p1 + p2
-                                if let Some(rhs_ref) = avail.get(&p2) {
-                                    let (mut lhs, mut rhs) = (lhs_ref, rhs_ref);
-                                    if lhs > rhs {
-                                        std::mem::swap(&mut lhs, &mut rhs);
+                                if let Some((rhs_ref, rhs_ord)) = avail.get(&p2) {
+                                    let cur = (*lhs_ord.max(rhs_ord), 0);
+                                    if cur < best {
+                                        best = cur;
+                                        *inst = if lhs_ref < rhs_ref {
+                                            Inst::Add(*lhs_ref, *rhs_ref)
+                                        } else {
+                                            Inst::Add(*rhs_ref, *lhs_ref)
+                                        };
                                     }
-                                    *inst = Inst::Add(*lhs, *rhs);
-                                    break 'outer;
-                                }
-                            }
-                            if let Some(p2) = val.add(p1) {
-                                // val = p2 - p1
-                                if let Some(rhs_ref) = avail.get(&p2) {
-                                    *inst = Inst::Sub(*rhs_ref, *lhs_ref);
-                                    break 'outer;
                                 }
                             }
                             if let Some(p2) = p1.sub(&val) {
                                 // val = p1 - p2
-                                if let Some(rhs_ref) = avail.get(&p2) {
-                                    *inst = Inst::Sub(*lhs_ref, *rhs_ref);
-                                    break 'outer;
+                                if let Some((rhs_ref, rhs_ord)) = avail.get(&p2) {
+                                    let cur = (*lhs_ord.max(rhs_ord), 1);
+                                    if cur < best {
+                                        best = cur;
+                                        *inst = Inst::Sub(*lhs_ref, *rhs_ref);
+                                    }
+                                }
+                            }
+                            if let Some(p2) = val.add(p1) {
+                                // val = p2 - p1
+                                if let Some((rhs_ref, rhs_ord)) = avail.get(&p2) {
+                                    let cur = (*lhs_ord.max(rhs_ord), 2);
+                                    if cur < best {
+                                        best = cur;
+                                        *inst = Inst::Sub(*rhs_ref, *lhs_ref);
+                                    }
                                 }
                             }
                         }
@@ -279,8 +313,7 @@ pub fn polynomial_strength_reduction(method: &mut Method) {
             }
             map.insert(inst_ref, val.clone());
             if !avail.contains_key(&val) {
-                avail.insert(val.clone(), inst_ref);
-                // avail_list.push_back(val.clone());
+                avail.insert(val.clone(), (inst_ref, avail.len()));
             }
             let (c, t) = (val.constant(), val.without_constant());
             avail_offset.entry(t).or_insert((inst_ref, c));
@@ -293,7 +326,6 @@ pub fn polynomial_strength_reduction(method: &mut Method) {
                 dom_tree,
                 map.clone(),
                 avail.clone(),
-                // avail_list.clone(),
                 avail_offset.clone(),
             );
         }
@@ -305,7 +337,6 @@ pub fn polynomial_strength_reduction(method: &mut Method) {
         &dom_tree,
         im::HashMap::new(),
         im::HashMap::new(),
-        // im::Vector::new(),
         im::HashMap::new(),
     );
 }

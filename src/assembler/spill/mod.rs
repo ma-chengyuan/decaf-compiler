@@ -343,6 +343,12 @@ impl<'a> Spiller<'a> {
             }
             None => (HashSet::new(), 0),
         };
+        // if self.l.method.name.inner.as_ref() == "filter" && !loop_usage.is_empty() {
+        //     println!(
+        //         "loop_usage: {} - {} - {:?}",
+        //         block_ref, max_pressure, loop_usage
+        //     );
+        // }
 
         let h = &self.spill_heuristic[&first_pt];
         let mut phi_plus_live_in = phis.clone();

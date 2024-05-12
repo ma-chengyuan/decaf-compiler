@@ -2,7 +2,7 @@
 
 #![allow(dead_code)]
 use std::{
-    collections::{BTreeMap, HashSet, VecDeque},
+    collections::{HashSet, VecDeque},
     fmt,
 };
 

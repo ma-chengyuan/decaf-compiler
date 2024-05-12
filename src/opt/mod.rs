@@ -74,6 +74,37 @@ pub fn reverse_postorder(method: &Method) -> Vec<BlockRef> {
 }
 
 /**
+ * Compute the reverse postorder of the control flow graph of a method, but
+ * only for blocks that are in the `allowed` set.
+ */
+pub fn reverse_postorder_within(
+    method: &Method,
+    block_ref: BlockRef,
+    allowed: &HashSet<BlockRef>,
+) -> Vec<BlockRef> {
+    let mut postorder = Vec::new();
+    let mut discovered = HashSet::new();
+    let mut finished = HashSet::new();
+    let mut stack = vec![block_ref];
+    while let Some(&block) = stack.last() {
+        if discovered.insert(block) {
+            for_each_successor(method, block, |succ| {
+                if !discovered.contains(&succ) && allowed.contains(&succ) {
+                    stack.push(succ);
+                }
+            });
+        } else {
+            stack.pop();
+            if finished.insert(block.0) {
+                postorder.push(block);
+            }
+        }
+    }
+    postorder.reverse();
+    postorder
+}
+
+/**
  * Compute the predecessors of each block in the control flow graph of a method.
  * Skips unreachable blocks.
  */

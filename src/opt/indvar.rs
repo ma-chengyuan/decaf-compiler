@@ -481,17 +481,96 @@ pub fn reduce_induction_variables(method: &mut Method) {
         }
         // Pick a representative for each multiplier to be initialized out of the loop
         #[allow(clippy::mutable_key_type)]
-        let mut rep: HashMap<(InstRef, Poly), (InstRef, Poly)> = HashMap::new();
+        let mut reps: HashMap<(InstRef, Poly), (InstRef, Poly)> = HashMap::new();
         let loop_ = loop_rc.borrow();
         for ((base_ref, mult), vars) in ind_var_by_mult.iter() {
             if *mult == Poly::from_int(1) {
                 // No need to initialize the base induction variable.
                 continue;
             }
-            let (inst_ref, ind_var) = vars
+            // We now need to pick a representative to promote to loop header.
+            // This representative will be initialized in the preheader, and
+            // accumulate in the backedges.
+            // The choice of representative can affect performance a lot. Here
+            // we use a simple heuristic.
+            let mut scores = vars
                 .iter()
-                .find(|(_, ind_var)| ind_var.offset.is_zero()) // Prefer offset 0, saves us an add in the preheader.
-                .unwrap_or_else(|| &vars[0]);
+                .map(|(i, _)| (*i, 0usize))
+                .collect::<HashMap<_, _>>();
+            // The heuristic we use is to find the first induction variable that
+            // is used non-arithmetically. I.e., as an argument for
+            // non-arithmetical instructions. For two reasons:
+            // - Argument used in arithmetical instructions might be
+            //   intermediate values only used to compute some useful values later
+            //   on. If we choose it to be the representative, the useful values
+            //   are still steps away.
+            // - If such arguments turned out to be still useful. Polynomial
+            //   Strength Reduction step will ensure that they are still computed
+            //   efficiently.
+            let rev_postorder = loop_.body_reverse_postorder(method);
+            let n_total_insts: usize = loop_
+                .body
+                .iter()
+                .map(|b| method.block(*b).insts.len())
+                .sum();
+            let mut n_insts = 0;
+            for block_ref in rev_postorder.iter().copied() {
+                for inst_ref in method.block(block_ref).insts.iter().copied() {
+                    if let Some(score) = scores.get_mut(&inst_ref) {
+                        *score += n_total_insts - n_insts;
+                    }
+                    match method.inst(inst_ref) {
+                        // Skip phis in the loop header.
+                        Inst::Phi(map) if block_ref == header_ref => {
+                            for (_, src) in map.iter() {
+                                if let Some(score) = scores.get_mut(src) {
+                                    // Being used in a phi in the loop header is a good sign.
+                                    // The induction variable is an accumulator
+                                    // and may be used outside. Give it a high score.
+                                    *score += n_total_insts;
+                                }
+                            }
+                        }
+                        // Skip trivial uses.
+                        Inst::Copy(_)
+                        | Inst::Add(_, _)
+                        | Inst::Sub(_, _)
+                        | Inst::Neg(_)
+                        | Inst::Mul(_, _) => continue,
+                        inst => inst.for_each_inst_ref_copied(|arg_ref| {
+                            if let Some(score) = scores.get_mut(&arg_ref) {
+                                *score += n_total_insts * (n_total_insts - n_insts) + 1;
+                            }
+                        }),
+                    }
+                    n_insts += 1;
+                }
+            }
+            let inst_ref = scores
+                .iter()
+                .max_by_key(|(_, score)| *score)
+                .map(|(inst_ref, _)| inst_ref)
+                .unwrap();
+            let ind_var = &vars.iter().find(|(i, _)| i == inst_ref).unwrap().1;
+            // let (inst_ref, ind_var) = vars
+            //     .iter()
+            //     .find(|(_, ind_var)| ind_var.offset.is_zero()) // Prefer offset 0, saves us an add in the preheader.
+            //     .unwrap_or_else(|| &vars[0]);
+            // if method.name.inner.as_ref() == "filter" && header_ref.0 == 0 {
+            //     println!("{}: ", header_ref);
+            //     for (inst_ref, ind_var) in vars {
+            //         println!(
+            //             "  {}: <{}, {}, {}> delta {}",
+            //             inst_ref,
+            //             iv.pretty_print_poly(&iv.inst_to_poly[&ind_var.base.inst_ref], method),
+            //             iv.pretty_print_poly(&ind_var.mult, method),
+            //             iv.pretty_print_poly(&ind_var.offset, method),
+            //             iv.pretty_print_poly(&ind_var.base.delta, method),
+            //         );
+            //     }
+            //     println!("  rep: {:?}", inst_ref);
+            //     crate::utils::show_graphviz(&method.dump_graphviz());
+            // }
             let base_init_val = match method.inst(ind_var.base.inst_ref) {
                 Inst::Phi(map) => map[&preheader_ref],
                 _ => unreachable!(),
@@ -519,7 +598,7 @@ pub fn reduce_induction_variables(method: &mut Method) {
             // Building the phi map for the preheader.
             let var_ref = method.next_inst_prepend(header_ref, Inst::Phi(HashMap::new()));
             iv.on_new_inst(method, header_ref, var_ref);
-            rep.insert((*base_ref, mult.clone()), (var_ref, ind_var.offset.clone()));
+            reps.insert((*base_ref, mult.clone()), (var_ref, ind_var.offset.clone()));
             if let Some(annotation) = method.get_inst_annotation(inst_ref) {
                 *method.annotate_inst_mut(var_ref) = annotation.clone();
             }
@@ -539,7 +618,7 @@ pub fn reduce_induction_variables(method: &mut Method) {
             let (rep, rep_offset) = if mult.is_one() {
                 (vars[0].1.base.inst_ref, Poly::from_int(0))
             } else {
-                rep[&(base_ref, mult)].clone()
+                reps[&(base_ref, mult)].clone()
             };
             for (inst_ref, ind_var) in vars {
                 if ind_var.offset == rep_offset {
