@@ -385,7 +385,9 @@ impl<T: CoalescingNode + Debug> Coalescer<T> {
             y.insert((i, j), y_ij);
         }
         for ((i, c), w) in self.pref.iter() {
-            objective -= *w * x[i][*c];
+            if self.colors.contains_key(i) {
+                objective -= *w * x[i][*c];
+            }
         }
         let mut model = problem.minimise(objective.clone()).using(highs);
         for (_, v) in x.iter() {
@@ -545,6 +547,9 @@ impl<T: CoalescingNode + Debug> Coalescer<T> {
         // Preferences are implemented as fixed aux node.
         let mut aux_nodes = vec![];
         for (i, ((x, c), w)) in self.pref.iter().enumerate() {
+            if !self.colors.contains_key(x) {
+                continue;
+            }
             let aux_node = T::new_aux(i);
             aux_nodes.push(aux_node);
             self.gi.add_node(aux_node);
