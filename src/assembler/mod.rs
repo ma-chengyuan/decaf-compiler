@@ -814,7 +814,7 @@ impl<'a> MethodAssembler<'a> {
         for block_ref in rev_postorder.iter().cloned() {
             if self.l.loops.is_header(block_ref) {
                 // Align loop headers to 16 bytes if possibile
-                self.emit_code(".p2align 4");
+                // self.emit_code(".p2align 4");
                 // self.emit_code(".p2align 4,,10");
                 // self.emit_code(".p2align 3");
             }
@@ -1453,10 +1453,12 @@ impl<'a> MethodAssembler<'a> {
                 if max_in_bounds {
                     // Only need to check below, i.e., if reg >= req_min
                     self.emit_code(format!("cmpq ${}, {}", req_min, reg));
+                    self.emit_code(".p2align 3");
                     self.emit_code(format!("jl {}", fail_branch));
                 } else if min_in_bounds {
                     // Only need to check above, i.e., if reg <= req_max
                     self.emit_code(format!("cmpq ${}, {}", req_max, reg));
+                    self.emit_code(".p2align 3");
                     self.emit_code(format!("jg {}", fail_branch));
                 } else {
                     // Double check both bounds, i.e., if reg in [req_min, req_max]
@@ -1466,6 +1468,7 @@ impl<'a> MethodAssembler<'a> {
                         self.emit_code(format!("leaq {}({}), %rax", -req_min, reg));
                         self.emit_code(format!("cmpq ${}, %rax", req_max - req_min));
                     }
+                    self.emit_code(".p2align 3");
                     self.emit_code(format!("ja {}", fail_branch)); // Unsigned comparison
                 }
                 self.pending_bounds_check.insert(check);
