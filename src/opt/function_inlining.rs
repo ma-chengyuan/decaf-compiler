@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use im::HashMap;
 
 use crate::{
@@ -243,4 +245,23 @@ pub fn inline_functions(program: &mut Program) {
         method.remove_unreachable();
         method.merge_blocks();
     }
+}
+
+pub fn remove_dead_functions(program: &mut Program) {
+    let mut used = HashSet::new();
+    let mut queue = vec![String::from("main")];
+    used.insert(String::from("main"));
+    while let Some(method_name) = queue.pop() {
+        let method = program.methods.get(&method_name).unwrap();
+        for (_, inst) in method.iter_insts() {
+            if let Inst::Call { method, .. } = inst {
+                let method_name = method.to_string();
+                if !used.contains(&method_name) && program.methods.contains_key(&method_name) {
+                    used.insert(method_name.clone());
+                    queue.push(method_name);
+                }
+            }
+        }
+    }
+    program.methods.retain(|name, _| used.contains(name));
 }

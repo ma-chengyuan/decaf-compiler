@@ -32,12 +32,12 @@ use crate::{
 };
 
 use self::{
-    arr_nm::ArrayAccessOffsetNonMaterializer, imm_nm::ImmediateNonMaterializer,
-    regalloc::RegAllocator, spill::Spiller, term_nm::TerminatorNonMaterializer,
+    arr_nm::ArrayAccessOffsetNonMaterializer, coalesce::Coalescer,
+    imm_nm::ImmediateNonMaterializer, regalloc::RegAllocator, spill::Spiller,
+    term_nm::TerminatorNonMaterializer,
 };
 
 pub mod arr_nm;
-#[cfg(feature = "ilp")]
 pub mod coalesce;
 pub mod imm_nm;
 pub mod par_copy;
@@ -162,20 +162,30 @@ pub struct Assembler {
     // corresponds to .text
     code: Vec<String>,
 
-    optimizations: HashSet<Optimization>,
+    opts: HashSet<Optimization>,
 }
 
 impl Assembler {
     pub fn new(program: Program, optimizations: &[Optimization]) -> Self {
         let mut optimizations: HashSet<_> = optimizations.iter().cloned().collect();
         if optimizations.remove(&Optimization::All) {
-            optimizations.extend([Optimization::OmitFramePointer]);
+            optimizations.extend([
+                Optimization::OmitFramePointer,
+                Optimization::AlignLoops,
+                // Optimization::AlignBoundsChecks, // only helps on select microarchitectures
+                Optimization::CoalesceRegisters,
+                Optimization::CoalesceRegistersILP,
+                Optimization::NonmateriazliedImmediate,
+                Optimization::NonmaterializedArrayIndexOffset,
+                Optimization::NonmaterializedCondition,
+                Optimization::Peephole,
+            ]);
         }
         Self {
             program,
             data: Vec::new(),
             code: Vec::new(),
-            optimizations,
+            opts: optimizations,
         }
     }
 
@@ -207,14 +217,6 @@ impl Assembler {
         self.code.push(format!("{}:     # {}", label, annotation));
     }
 
-    #[cfg(feature = "ilp")]
-    fn coalesce(l: &mut LoweredMethod, regs: &[&'static str]) {
-        coalesce::Coalescer::new_reg(l, regs).solve_and_apply(l);
-    }
-
-    #[cfg(not(feature = "ilp"))]
-    fn coalesce(_l: &mut LoweredMethod, regs: &[&'static str]) {}
-
     pub fn assemble_lowered(&mut self, file_name: &str) -> String {
         // todo: remove the .clone()
         for global in self.program.globals.clone().values() {
@@ -223,12 +225,20 @@ impl Assembler {
 
         for method in self.program.methods.clone().values() {
             let mut lowered = LoweredMethod::new(method);
-            ImmediateNonMaterializer::new(&mut lowered).run();
-            ArrayAccessOffsetNonMaterializer::new(&mut lowered).run();
-            TerminatorNonMaterializer::new(&mut lowered).run();
+            if self.opts.contains(&Optimization::NonmateriazliedImmediate) {
+                ImmediateNonMaterializer::new(&mut lowered).run();
+            }
+            if self
+                .opts
+                .contains(&Optimization::NonmaterializedArrayIndexOffset)
+            {
+                ArrayAccessOffsetNonMaterializer::new(&mut lowered).run();
+            }
+            if self.opts.contains(&Optimization::NonmaterializedCondition) {
+                TerminatorNonMaterializer::new(&mut lowered).run();
+            }
             let all_regs = {
-                let omit_frame_pointer =
-                    self.optimizations.contains(&Optimization::OmitFramePointer);
+                let omit_frame_pointer = self.opts.contains(&Optimization::OmitFramePointer);
                 // Don't use %rbp as a register if omit_frame_pointer is disabled.
                 REGS.iter()
                     .copied()
@@ -239,12 +249,16 @@ impl Assembler {
             // For debugging. Smaller max_reg pushes the spiller to limit where
             // more bugs are likely to be found.
             // let max_reg = 3;
-
             let all_regs = &all_regs[..max_reg];
             Spiller::new(&self.program, &mut lowered, max_reg).spill();
             RegAllocator::new(&self.program, &mut lowered).allocate();
             let ordered_regs = MethodAssembler::pre_order_regs(&lowered, all_regs);
-            Self::coalesce(&mut lowered, &ordered_regs);
+            if self.opts.contains(&Optimization::CoalesceRegisters)
+                | self.opts.contains(&Optimization::CoalesceRegistersILP)
+            {
+                Coalescer::new_reg(&lowered, &ordered_regs)
+                    .solve_and_apply(&mut lowered, &self.opts);
+            }
             MethodAssembler::new(self, &lowered, ordered_regs).assemble_method();
         }
 
@@ -263,14 +277,16 @@ impl Assembler {
             ".string \"Error: Method finished without returning anything when it should have.\\n\"",
         );
 
-        // Peephole optimizations
-        self.adjust_cmp_jmp_order();
-        self.remove_unnecessary_jmps();
-        self.remove_unnecessary_labels();
-        self.remove_unreachable_code();
-        self.remove_unnecessary_jmps();
-        self.remove_self_movs();
-        self.replace_mov_0_with_xor();
+        if self.opts.contains(&Optimization::Peephole) {
+            // Peephole optimizations
+            self.adjust_cmp_jmp_order();
+            self.remove_unnecessary_jmps();
+            self.remove_unnecessary_labels();
+            self.remove_unreachable_code();
+            self.remove_unnecessary_jmps();
+            self.remove_self_movs();
+            self.replace_mov_0_with_xor();
+        }
 
         let mut output = format!(".file 0 \"{}\"\n.data\n", file_name);
         for data in self.data.iter() {
@@ -423,7 +439,7 @@ impl<'a> MethodAssembler<'a> {
     fn new(asm: &'a mut Assembler, l: &'a LoweredMethod, regs: Vec<&'static str>) -> Self {
         // crate::utils::show_graphviz(&l.method.dump_graphviz());
         let stack_slot_resolver = StackSlotAddressResolver {
-            omit_frame_pointer: asm.optimizations.contains(&Optimization::OmitFramePointer),
+            omit_frame_pointer: asm.opts.contains(&Optimization::OmitFramePointer),
             ..Default::default()
         };
         Self {
@@ -812,11 +828,13 @@ impl<'a> MethodAssembler<'a> {
         let rev_postorder = reverse_postorder(&self.l.method);
 
         for block_ref in rev_postorder.iter().cloned() {
-            if self.l.loops.is_header(block_ref) {
+            if self.l.loops.is_header(block_ref)
+                && self.asm.opts.contains(&Optimization::AlignLoops)
+            {
                 // Align loop headers to 16 bytes if possibile
                 // self.emit_code(".p2align 4");
-                // self.emit_code(".p2align 4,,10");
-                // self.emit_code(".p2align 3");
+                self.emit_code(".p2align 4,,10");
+                self.emit_code(".p2align 3");
             }
             self.emit_block_label(block_ref);
             let rbp_minus_rsp_before = self.stack_slot_resolver.borrow().rbp_minus_rsp;
@@ -1450,15 +1468,20 @@ impl<'a> MethodAssembler<'a> {
                 if min_in_bounds && max_in_bounds {
                     return; // The index is already known to be in bounds, no need to check again.
                 }
+                let align = self.asm.opts.contains(&Optimization::AlignBoundsChecks);
                 if max_in_bounds {
                     // Only need to check below, i.e., if reg >= req_min
                     self.emit_code(format!("cmpq ${}, {}", req_min, reg));
-                    self.emit_code(".p2align 3");
+                    if align {
+                        self.emit_code(".p2align 3");
+                    }
                     self.emit_code(format!("jl {}", fail_branch));
                 } else if min_in_bounds {
                     // Only need to check above, i.e., if reg <= req_max
                     self.emit_code(format!("cmpq ${}, {}", req_max, reg));
-                    self.emit_code(".p2align 3");
+                    if align {
+                        self.emit_code(".p2align 3");
+                    }
                     self.emit_code(format!("jg {}", fail_branch));
                 } else {
                     // Double check both bounds, i.e., if reg in [req_min, req_max]
@@ -1468,7 +1491,9 @@ impl<'a> MethodAssembler<'a> {
                         self.emit_code(format!("leaq {}({}), %rax", -req_min, reg));
                         self.emit_code(format!("cmpq ${}, %rax", req_max - req_min));
                     }
-                    self.emit_code(".p2align 3");
+                    if align {
+                        self.emit_code(".p2align 3");
+                    }
                     self.emit_code(format!("ja {}", fail_branch)); // Unsigned comparison
                 }
                 self.pending_bounds_check.insert(check);

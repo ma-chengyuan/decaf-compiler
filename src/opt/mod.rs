@@ -195,12 +195,12 @@ pub fn optimize(mut program: Program, optimizations: &[Optimization]) -> Program
             Optimization::DeadCodeElimination,
             // Optimization::CommonSubexpressionElimination, // Superseded by GVNPRE
             Optimization::ConstantFolding,
-            // Optimization::ArraySplitting,
+            // Optimization::ArraySplitting, // Not that useful
             Optimization::FunctionInlining,
             Optimization::RedundantGlobalAndArrayAccessElimination,
             Optimization::DeadArrayStoreElimination,
             Optimization::LoopUnrolling,
-            // Optimization::LoopInvariantCodeMotion,
+            // Optimization::LoopInvariantCodeMotion, // Badly implemented
             Optimization::InductionVariable,
             Optimization::PolynomialStrengthReduction,
         ]);
@@ -209,7 +209,9 @@ pub fn optimize(mut program: Program, optimizations: &[Optimization]) -> Program
     if optimizations.contains(&Optimization::FunctionInlining) {
         function_inlining::inline_functions(&mut program);
     }
-
+    if optimizations.contains(&Optimization::DeadFunctionElimination) {
+        function_inlining::remove_dead_functions(&mut program);
+    }
     // Construct SSA form
     for method in program.methods.values_mut() {
         *method = construct_ssa(method);
@@ -302,7 +304,7 @@ pub fn optimize(mut program: Program, optimizations: &[Optimization]) -> Program
     }
 
     // for method in program.methods.values_mut() {
-    //     if method.name.inner.as_ref() == "filter" {
+    //     if method.name.inner.as_ref() == "main" {
     //         crate::utils::show_graphviz(&method.dump_graphviz());
     //     }
     // }

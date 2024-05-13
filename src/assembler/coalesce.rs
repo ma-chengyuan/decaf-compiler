@@ -4,9 +4,9 @@ use std::{
     fmt::Debug,
 };
 
+#[cfg(feature = "ilp")]
 use good_lp::{
-    constraint, highs, variable, Expression, ProblemVariables, ResolutionError, Solution,
-    SolverModel, Variable,
+    constraint, highs, variable, Expression, ProblemVariables, Solution, SolverModel, Variable,
 };
 use lazy_static::lazy_static;
 use petgraph::{
@@ -14,7 +14,11 @@ use petgraph::{
     graphmap::{NodeTrait, UnGraphMap},
 };
 
-use crate::inter::ir::{Address, Inst, InstRef, ProgPt};
+use crate::{
+    inter::ir::{Address, Inst, InstRef, ProgPt, StackSlotRef},
+    opt::for_each_successor,
+    utils::cli::Optimization,
+};
 
 use super::{
     identify_fast_arg_insts, LoweredMethod, NonMaterializedArgMapExt, ARG_REGS, CALLEE_SAVE_REGS,
@@ -38,6 +42,13 @@ impl CoalescingNode for InstRef {
     fn new_aux(i: usize) -> Self {
         assert!(i < usize::MAX / 2);
         InstRef(usize::MAX - i)
+    }
+}
+
+impl CoalescingNode for StackSlotRef {
+    fn new_aux(i: usize) -> Self {
+        assert!(i < usize::MAX / 2);
+        StackSlotRef(usize::MAX - i)
     }
 }
 
@@ -240,7 +251,7 @@ impl Coalescer<InstRef> {
         }
     }
 
-    pub fn solve_and_apply(mut self, l: &mut LoweredMethod) {
+    pub fn solve_and_apply(mut self, l: &mut LoweredMethod, opts: &HashSet<Optimization>) {
         // Sanity check!
         assert!(self.max_color == l.max_reg);
         let fallback = if self.initial_solution.is_some() {
@@ -254,8 +265,11 @@ impl Coalescer<InstRef> {
         } else {
             l.reg.clone()
         };
-        if self.solve().is_err() {
-            self.colors = fallback;
+        #[allow(clippy::collapsible_if)]
+        if opts.contains(&Optimization::CoalesceRegistersILP) {
+            if self.solve().is_err() {
+                self.colors = fallback;
+            }
         }
         for (a, b, _) in self.gi.all_edges() {
             assert!(self.colors[&a] != self.colors[&b]);
@@ -266,6 +280,73 @@ impl Coalescer<InstRef> {
             assert!(l.reg.contains_key(inst_ref));
             l.reg.insert(*inst_ref, *color);
         }
+    }
+}
+
+impl Coalescer<StackSlotRef> {
+    #[allow(dead_code)]
+    pub fn new_spill_slot(l: &LoweredMethod) {
+        let mut gi = UnGraphMap::<StackSlotRef, ()>::default();
+        let spill_slots = l.spill_slots.values().collect::<HashSet<_>>();
+        let mut out: Vec<HashSet<StackSlotRef>> = vec![HashSet::new(); l.method.n_blocks()];
+        // in[b]: the set of stack slots that are live at the beginning of block b.
+        let mut in_: Vec<HashSet<StackSlotRef>> = vec![HashSet::new(); l.method.n_blocks()];
+        let rev_postorder = crate::opt::reverse_postorder(&l.method);
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for block_ref in rev_postorder.iter().rev() {
+                let mut live: HashSet<StackSlotRef> = HashSet::new();
+                for_each_successor(&l.method, *block_ref, |succ| {
+                    live.extend(in_[succ.0].iter())
+                });
+                if live != out[block_ref.0] {
+                    changed = true;
+                    out[block_ref.0] = live.clone();
+                }
+                let consider_nm = |live: &mut HashSet<StackSlotRef>, nm: &HashSet<InstRef>| {
+                    for inst_ref in nm {
+                        if !matches!(l.method.inst(*inst_ref), Inst::LoadConst(_)) {
+                            live.insert(l.spill_slots[inst_ref]);
+                        }
+                    }
+                };
+                if let Some((_, nm)) = l.nm_terms.get(block_ref) {
+                    consider_nm(&mut live, nm);
+                }
+                let mut add_clique = |live: &mut HashSet<StackSlotRef>| {
+                    for (i, slot) in live.iter().enumerate() {
+                        for other in live.iter().skip(i + 1) {
+                            gi.add_edge(*slot, *other, ());
+                        }
+                    }
+                };
+                add_clique(&mut live);
+                for inst_ref in l.method.block(*block_ref).insts.iter().rev() {
+                    if let Some(nm) = l.nm_args.get(inst_ref) {
+                        consider_nm(&mut live, nm);
+                    }
+                    match l.method.inst(*inst_ref) {
+                        Inst::Load(Address::Local(target)) if spill_slots.contains(&target) => {
+                            live.insert(*target);
+                        }
+                        Inst::Store {
+                            addr: Address::Local(target),
+                            ..
+                        } if spill_slots.contains(&target) => {
+                            live.remove(target);
+                        }
+                        _ => {}
+                    }
+                    add_clique(&mut live);
+                }
+                if live != in_[block_ref.0] {
+                    changed = true;
+                    in_[block_ref.0] = live;
+                }
+            }
+        }
+        // TODO: Compute the affinity graph and complete this.
     }
 }
 
@@ -367,7 +448,13 @@ impl<T: CoalescingNode + Debug> Coalescer<T> {
         results
     }
 
-    fn solve_ilp(&mut self) -> Result<f64, ResolutionError> {
+    #[cfg(not(feature = "ilp"))]
+    fn solve_ilp(&mut self) -> Result<i64, ()> {
+        Err(())
+    }
+
+    #[cfg(feature = "ilp")]
+    fn solve_ilp(&mut self) -> Result<f64, ()> {
         if self.gi.node_count() == 0 {
             return Ok(0.0);
         }
@@ -467,21 +554,18 @@ impl<T: CoalescingNode + Debug> Coalescer<T> {
         }
         model.set_verbose(*HIGHS_VERBOSE);
         let start = std::time::Instant::now();
-        let solution = model.solve()?;
+        let solution = model.solve().map_err(|_| ())?;
         if *HIGHS_VERBOSE {
             println!("ILP took {:?}", start.elapsed());
         }
         let mut colors = HashMap::new();
         for (k, v) in x.iter() {
-            let color = v
-                .iter()
-                .position(|x| solution.value(*x) > 0.5)
-                .ok_or(ResolutionError::Infeasible)?;
+            let color = v.iter().position(|x| solution.value(*x) > 0.5).ok_or(())?;
             colors.insert(*k, color);
         }
         for (a, b, _) in self.gi.all_edges() {
             if colors[&a] == colors[&b] {
-                return Err(ResolutionError::Infeasible);
+                return Err(());
             }
         }
         if *HIGHS_VERBOSE {
@@ -491,7 +575,7 @@ impl<T: CoalescingNode + Debug> Coalescer<T> {
         Ok(solution.eval(&objective))
     }
 
-    fn solve(&mut self) -> Result<(), ResolutionError> {
+    fn solve(&mut self) -> Result<(), ()> {
         let mut removed: Vec<(T, Vec<T>)> = vec![];
         let with_prefs = self.pref.keys().map(|(x, _)| *x).collect::<HashSet<_>>();
         loop {

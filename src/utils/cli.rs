@@ -47,8 +47,26 @@ pub enum Optimization {
     InductionVariable,
     #[clap(name = "psr")]
     PolynomialStrengthReduction,
+    #[clap(name = "dfe")]
+    DeadFunctionElimination,
     #[clap(name = "omit-frame-pointer")]
     OmitFramePointer,
+    #[clap(name = "align-loops")]
+    AlignLoops,
+    #[clap(name = "align-bc")]
+    AlignBoundsChecks,
+    #[clap(name = "coalesce")]
+    CoalesceRegisters,
+    #[clap(name = "coalesce-ilp")]
+    CoalesceRegistersILP,
+    #[clap(name = "nm-imm")]
+    NonmateriazliedImmediate,
+    #[clap(name = "nm-array")]
+    NonmaterializedArrayIndexOffset,
+    #[clap(name = "nm-condition")]
+    NonmaterializedCondition,
+    #[clap(name = "peephole")]
+    Peephole,
     #[clap(name = "all")]
     All,
 }
