@@ -234,6 +234,11 @@ pub fn polynomial_strength_reduction(method: &mut Method) {
         for inst_ref in method.block(block_ref).insts.clone() {
             let val = Poly::from_inst(method, inst_ref, &map);
             let inst = method.inst_mut(inst_ref);
+            if val.is_constant() {
+                // If the value is a constant, we can replace the instruction
+                // with a load constant instruction.
+                *inst = Inst::LoadConst(Const::Int(val.constant()));
+            }
             match inst {
                 Inst::Neg(_) => {
                     if let Some((src, _)) = avail.get(&val) {
