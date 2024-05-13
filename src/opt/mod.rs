@@ -197,6 +197,7 @@ pub fn optimize(mut program: Program, optimizations: &[Optimization]) -> Program
             Optimization::ConstantFolding,
             // Optimization::ArraySplitting, // Not that useful
             Optimization::FunctionInlining,
+            Optimization::DeadFunctionElimination,
             Optimization::RedundantGlobalAndArrayAccessElimination,
             Optimization::DeadArrayStoreElimination,
             Optimization::LoopUnrolling,
