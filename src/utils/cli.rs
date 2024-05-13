@@ -65,6 +65,8 @@ pub enum Optimization {
     NonmaterializedArrayIndexOffset,
     #[clap(name = "nm-condition")]
     NonmaterializedCondition,
+    #[clap(name = "const-divisor")]
+    ConstDivisorStrengthReduction,
     #[clap(name = "peephole")]
     Peephole,
     #[clap(name = "all")]

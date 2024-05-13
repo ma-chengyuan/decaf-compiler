@@ -178,6 +178,7 @@ impl Assembler {
                 Optimization::NonmateriazliedImmediate,
                 Optimization::NonmaterializedArrayIndexOffset,
                 Optimization::NonmaterializedCondition,
+                Optimization::ConstDivisorStrengthReduction,
                 Optimization::Peephole,
             ]);
         }
@@ -226,7 +227,7 @@ impl Assembler {
         for method in self.program.methods.clone().values() {
             let mut lowered = LoweredMethod::new(method);
             if self.opts.contains(&Optimization::NonmateriazliedImmediate) {
-                ImmediateNonMaterializer::new(&mut lowered).run();
+                ImmediateNonMaterializer::new(&mut lowered, &self.opts).run();
             }
             if self
                 .opts

@@ -5,17 +5,23 @@
 //! materialized into registers. But why place a constant in a register when it
 //! can be encoded as an immediate? This module performs this optimization.
 
-use crate::inter::{constant::Const, ir::Inst};
+use std::collections::HashSet;
+
+use crate::{
+    inter::{constant::Const, ir::Inst},
+    utils::cli::Optimization,
+};
 
 use super::{LoweredMethod, NonMaterializedArgMapExt};
 
 pub struct ImmediateNonMaterializer<'a> {
     l: &'a mut LoweredMethod,
+    opts: &'a HashSet<Optimization>,
 }
 
 impl<'a> ImmediateNonMaterializer<'a> {
-    pub fn new(l: &'a mut LoweredMethod) -> Self {
-        ImmediateNonMaterializer { l }
+    pub fn new(l: &'a mut LoweredMethod, opts: &'a HashSet<Optimization>) -> Self {
+        ImmediateNonMaterializer { l, opts }
     }
 
     pub fn run(mut self) {
@@ -51,13 +57,21 @@ impl<'a> ImmediateNonMaterializer<'a> {
                 Inst::Add(lhs, rhs)
                 | Inst::Sub(lhs, rhs)
                 | Inst::Mul(lhs, rhs)
-                | Inst::Div(lhs, rhs)
                 | Inst::Eq(lhs, rhs)
                 | Inst::Neq(lhs, rhs)
                 | Inst::Less(lhs, rhs)
                 | Inst::LessEq(lhs, rhs) => {
                     unmaterialize_if!(is_const_32(*lhs));
                     unmaterialize_if!(is_const_32(*rhs));
+                }
+                Inst::Div(lhs, rhs) => {
+                    unmaterialize_if!(is_const_32(*lhs));
+                    if self
+                        .opts
+                        .contains(&Optimization::ConstDivisorStrengthReduction)
+                    {
+                        unmaterialize_if!(is_const_32(*rhs));
+                    }
                 }
                 Inst::LoadArray { index, .. } => {
                     unmaterialize_if!(is_const_index(*index));
