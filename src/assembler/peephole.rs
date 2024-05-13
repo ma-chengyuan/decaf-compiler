@@ -18,7 +18,7 @@ const RE_REGISTER: &str = r"%[a-zA-Z0-9]+";
 const RE_CC: &str = r"a|ae|b|be|c|cxz|ecxz|rcxz|e|g|ge|l|le|na|nae|nb|nbe|nc|ne|ng|nge|nl|nle|no|np|ns|nz|o|p|pe|po|s|z";
 
 lazy_static! {
-    static ref RE_DIRECTIVE: Regex = Regex::new(r"^\s*\.[a-zA-Z]+\s").unwrap();
+    static ref RE_DIRECTIVE: Regex = Regex::new(r"^\s*\.[a-zA-Z0-9]+\s").unwrap();
     static ref RE_LOC: Regex = Regex::new(r"^\s*\.loc\s").unwrap();
     static ref RE_LABEL: Regex = Regex::new(&format!(r"^\s*(?<label>{}):", RE_SYMBOL)).unwrap();
     static ref RE_JMP: Regex = Regex::new(&format!(r"^\s*jmp\s+(?<label>{})", RE_SYMBOL)).unwrap();

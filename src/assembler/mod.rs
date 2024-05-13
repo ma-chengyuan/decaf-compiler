@@ -812,6 +812,12 @@ impl<'a> MethodAssembler<'a> {
         let rev_postorder = reverse_postorder(&self.l.method);
 
         for block_ref in rev_postorder.iter().cloned() {
+            if self.l.loops.is_header(block_ref) {
+                // Align loop headers to 16 bytes if possibile
+                self.emit_code(".p2align 4");
+                // self.emit_code(".p2align 4,,10");
+                // self.emit_code(".p2align 3");
+            }
             self.emit_block_label(block_ref);
             let rbp_minus_rsp_before = self.stack_slot_resolver.borrow().rbp_minus_rsp;
             let insts = &self.l.method.block(block_ref).insts;
