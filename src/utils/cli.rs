@@ -69,6 +69,8 @@ pub enum Optimization {
     BoundsCheckFusion,
     #[clap(name = "const-divisor")]
     ConstDivisorStrengthReduction,
+    #[clap(name = "const-modulo")]
+    ConstModuloStrengthReduction,
     #[clap(name = "peephole")]
     Peephole,
     #[clap(name = "all")]

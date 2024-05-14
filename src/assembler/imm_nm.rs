@@ -57,7 +57,6 @@ impl<'a> ImmediateNonMaterializer<'a> {
                 Inst::Add(lhs, rhs)
                 | Inst::Sub(lhs, rhs)
                 | Inst::Mul(lhs, rhs)
-                | Inst::Mod(lhs, rhs)
                 | Inst::Eq(lhs, rhs)
                 | Inst::Neq(lhs, rhs)
                 | Inst::Less(lhs, rhs)
@@ -70,6 +69,15 @@ impl<'a> ImmediateNonMaterializer<'a> {
                     if self
                         .opts
                         .contains(&Optimization::ConstDivisorStrengthReduction)
+                    {
+                        unmaterialize_if!(is_const_32(*rhs));
+                    }
+                }
+                Inst::Mod(lhs, rhs) => {
+                    unmaterialize_if!(is_const_32(*lhs));
+                    if self
+                        .opts
+                        .contains(&Optimization::ConstModuloStrengthReduction)
                     {
                         unmaterialize_if!(is_const_32(*rhs));
                     }

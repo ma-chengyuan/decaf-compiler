@@ -179,6 +179,7 @@ impl Assembler {
                 Optimization::NonmaterializedArrayIndexOffset,
                 Optimization::NonmaterializedCondition,
                 Optimization::ConstDivisorStrengthReduction,
+                Optimization::ConstModuloStrengthReduction,
                 Optimization::BoundsCheckFusion,
                 Optimization::Peephole,
             ]);
@@ -1255,10 +1256,6 @@ impl<'a> MethodAssembler<'a> {
                         self.emit_code(format!("andq ${}, {}", (1 << shift) - 1, dst_reg));
                     }
                     d => {
-                        // self.emit_code(format!("movq {}, %rax", lhs));
-                        // self.emit_code("cqto"); // Sign-extend %rax into %rdx
-                        // self.emit_code(format!("idivq {}", rhs));
-                        // self.emit_code(format!("movq %rdx, {}", dst_reg));
                         use num_bigint::BigInt;
 
                         let d_abs = d.abs();
@@ -1273,30 +1270,24 @@ impl<'a> MethodAssembler<'a> {
                         if l - 1 > 0 {
                             self.emit_code(format!("sarq ${}, %rdx", l - 1));
                         }
-                        if lhs_reg != dst_reg {
+                        let lhs_backup = if lhs_reg != dst_reg {
                             self.emit_code(format!("movq {}, {}", lhs_reg, dst_reg));
-                        }
+                            &lhs_reg
+                        } else {
+                            self.emit_code(format!("movq {}, %rax", lhs_reg));
+                            "%rax"
+                        };
                         self.emit_code(format!("shrq $63, {}", dst_reg));
                         self.emit_code(format!("addq %rdx, {}", dst_reg));
                         if d < 0 {
                             self.emit_code(format!("negq {}", dst_reg));
                         }
-                        
-                        // // Save the original value of lhs_reg to %rdx
-                        // self.emit_code(format!("movq {}, %rdx", lhs_reg));
-
-                        // // Compute (a / d) * d and store in %rax
-                        // self.emit_code(format!("movq ${}, %rax", d));
-                        // self.emit_code(format!("imulq {}, %rax", dst_reg));
-
-                        // // Compute a - (a / d) * d and store in dst_reg (a % d)
-                        // self.emit_code(format!("subq %rax, %rdx"));
-                        // self.emit_code(format!("movq %rdx, {}", dst_reg));
-                        
-                        self.emit_code(format!("movq {}, %rdx", lhs_reg));
-                        self.emit_code(format!("imulq ${}, {}, %rax", d, dst_reg));
-                        self.emit_code("subq %rax, %rdx");
-                        self.emit_code(format!("movq %rdx, {}", dst_reg));
+                        // Compute (a / d) * d and store in %rdx
+                        self.emit_code(format!("imulq ${}, {}, %rdx", d, dst_reg));
+                        // Save the original value of lhs_reg (a) to dst_reg
+                        self.emit_code(format!("movq {}, {}", lhs_backup, dst_reg));
+                        // Compute a - (a / d) * d
+                        self.emit_code(format!("subq %rdx, {}", dst_reg));
                     }
                 }
             }
