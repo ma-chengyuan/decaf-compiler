@@ -57,6 +57,8 @@ impl<'a> ImmediateNonMaterializer<'a> {
                 Inst::Add(lhs, rhs)
                 | Inst::Sub(lhs, rhs)
                 | Inst::Mul(lhs, rhs)
+                | Inst::Div(lhs, rhs)
+                | Inst::Mod(lhs, rhs)
                 | Inst::Eq(lhs, rhs)
                 | Inst::Neq(lhs, rhs)
                 | Inst::Less(lhs, rhs)
