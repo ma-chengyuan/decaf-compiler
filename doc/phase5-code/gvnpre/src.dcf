@@ -1,0 +1,14 @@
+int test(int v1, int v2) {
+    int v3; 
+    if(v1 < v2) {
+        v3 = v1 + v2;
+    } else {
+        v3 = v1 - v2;
+    }
+    v3 = v1 + v2;
+    return v3;
+}
+
+void main() {
+    test(1, 2);
+}

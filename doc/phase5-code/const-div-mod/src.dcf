@@ -1,0 +1,17 @@
+int my_div(int x) {
+    return x / 12345;
+}
+
+int my_mod(int x) {
+    return x % 12345;
+}
+
+int my_div_p2(int x) {
+    return x / 1024;
+}
+
+int my_mod_p2(int x) {
+    return x % 1024;
+}
+
+void main() {}

@@ -1,0 +1,48 @@
+Initial cost without heuristic: 384
+Initial cost after applying heuristic: 362
+HiGHS log:
+
+Running with 8 thread(s)
+Solution has               num          max          sum
+Col     infeasibilities      0            0            0
+Integer infeasibilities      0            0            0
+Row     infeasibilities      0            0            0
+Row     residuals            0            0            0
+Presolving model
+2361 rows, 775 cols, 9229 nonzeros
+46 probing evaluations: 0 deleted rows, 0 deleted columns, 0 lifted nonzeros
+2361 rows, 775 cols, 9229 nonzeros
+
+MIP start solution is feasible, objective value is 362
+Objective function is integral with scale 1
+
+Solving MIP model with:
+   2361 rows
+   775 cols (775 binary, 0 integer, 0 implied int., 0 continuous)
+   9229 nonzeros
+
+        Nodes      |    B&B Tree     |            Objective Bounds              |  Dynamic Constraints |       Work      
+     Proc. InQueue |  Leaves   Expl. | BestBound       BestSol              Gap |   Cuts   InLp Confl. | LpIters     Time
+
+         0       0         0   0.00%   322             362               11.05%        0      0      0         0     0.0s
+ R       0       0         0   0.00%   322             356                9.55%        0      0      0       474     0.0s
+
+Solving report
+  Status            Optimal
+  Primal bound      322
+  Dual bound        322
+  Gap               0% (tolerance: 0.01%)
+  Solution status   feasible
+                    322 (objective)
+                    0 (bound viol.)
+                    0 (int. viol.)
+                    0 (row viol.)
+  Timing            0.06 (total)
+                    0.01 (presolve)
+                    0.00 (postsolve)
+  Nodes             1
+  LP iterations     490 (total)
+                    0 (strong br.)
+                    16 (separation)
+                    0 (heuristics)
+ILP took 62.111357ms

@@ -1,0 +1,14 @@
+import use_result;
+
+int A, B, C, D, E, F, G, H, I, J, K, L, M;
+
+int big_call(int a, int b, int c, int d, int e, int f, 
+             int g, int h, int i, int j, int k, int l, int m) {
+    return 0;
+}
+
+void main() {
+    int x;
+    x = big_call(A, B, C, D, E, F, G, H, I, J, K, L, M);
+    use_result(x);
+}

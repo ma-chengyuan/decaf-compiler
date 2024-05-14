@@ -1,0 +1,14 @@
+int image[1000000];
+int row, col;
+
+void main() {
+    int i, j;
+    for (i = 1; i < row; i++) {
+        for (j = 0; j < col; j++) {
+            int i1, i2; 
+            i1 = (i - 1) * row + j;
+            i2 = i * row + j;
+            image[i1] = image[i2];
+        }
+    }
+}
