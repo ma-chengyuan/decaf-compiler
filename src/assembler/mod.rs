@@ -1282,16 +1282,16 @@ impl<'a> MethodAssembler<'a> {
                             self.emit_code(format!("negq {}", dst_reg));
                         }
                         
-                        // Save the original value of lhs_reg to %rbx
-                        self.emit_code(format!("movq {}, %rbx", lhs_reg));
+                        // Save the original value of lhs_reg to %rdx
+                        self.emit_code(format!("movq {}, %rdx", lhs_reg));
 
                         // Compute (a / d) * d and store in %rax
                         self.emit_code(format!("movq ${}, %rax", d));
                         self.emit_code(format!("imulq {}, %rax", dst_reg));
 
                         // Compute a - (a / d) * d and store in dst_reg (a % d)
-                        self.emit_code(format!("subq %rax, %rbx"));
-                        self.emit_code(format!("movq %rbx, {}", dst_reg));
+                        self.emit_code(format!("subq %rax, %rdx"));
+                        self.emit_code(format!("movq %rdx, {}", dst_reg));
                     }
                 }
             }
